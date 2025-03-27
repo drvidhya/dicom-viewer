@@ -11,3 +11,4 @@ Requires Python 3.12 (for Open3D compat)
 2. Install dependencies using `pip install -r requirements.txt`
 3. Activate the virtual environment using `source ./.venv/bin/activate`
 4. Run `python dicom_to_png.py` to process dicom images
+5. Start HTTP server using `python -m http.server 8080`

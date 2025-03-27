@@ -9,3 +9,6 @@ python/.venv
 
 # Project specific
 sample-dicom
+
+# Android
+.idea/

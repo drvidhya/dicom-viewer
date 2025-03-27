@@ -152,7 +152,7 @@ def main():
     planes = getPlanes(images)
     result["axial"] = writeSlices(createSlices(planes["axial"], useAdaptiveHistogram), out_dir, "axial")
     result["coronal"] = writeSlices(createSlices(planes["coronal"], useAdaptiveHistogram), out_dir, "coronal")
-    result["saggital"] = writeSlices(createSlices(planes["saggital"], useAdaptiveHistogram), out_dir, "saggital")
+    result["sagittal"] = writeSlices(createSlices(planes["sagittal"], useAdaptiveHistogram), out_dir, "sagittal")
     result["gltf"] = createGltf(images, out_dir)
 
     f = open(os.path.join(out_dir,"index.json"), "w")

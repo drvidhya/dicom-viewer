@@ -4,35 +4,41 @@ import os
 import numpy as np
 import trimesh
 import open3d as o3d
+import json
 
 from skimage import measure
+
+def makeDirIfNotExists(*path): 
+    dir = os.path.join(*path)
+    if not os.path.exists(dir):
+        os.makedirs(dir)
+    return dir
 
 def progress_bar(iteration, total, prefix='', suffix='', length=30, fill='█'):
     percent = ("{0:.1f}").format(100 * (iteration / float(total)))
     filled_length = int(length * iteration // total)
     bar = fill * filled_length + '-' * (length - filled_length)
-    sys.stdout.write(f'\r{prefix} |{bar}| {percent}% {suffix}')
+    sys.stdout.write(f'\r{prefix} |{bar}| {percent}% {suffix} \033[K')
     sys.stdout.flush()
 
 def createSlices(input_image, useAdaptiveHistogram=False):
     result_slices = []
     count = input_image.GetDepth()
     for i in range(0, count):
-        progress_bar(i, count, prefix='Create Slices:', suffix=' ', length=50)
+        progress_bar(i, count, prefix='Create Slices:', suffix=' ')
         slice = input_image[:, :, i]
         if useAdaptiveHistogram:
             slice = sitk.AdaptiveHistogramEqualization(slice, slice.GetSize())
         result_slices.append(slice)
     return result_slices
 
-def writeSlices(slices, out_dir, name):
-    out_dir = os.path.join(out_dir, name)
-    if not os.path.exists(out_dir):
-        os.makedirs(out_dir)
+def writeSlices(slices, out_dir, name): 
+    makeDirIfNotExists(out_dir, name)
 
+    filenames = []
     # Iterate over each slice and save as PNG
     for i in range(len(slices)):
-        progress_bar(i, len(slices)-1, prefix='Write :' + out_dir, suffix='', length=50)
+        progress_bar(i, len(slices)-1, prefix='Write :' + out_dir, suffix='')
 
         # Extract the slice
         slice_image = slices[i]
@@ -42,8 +48,10 @@ def writeSlices(slices, out_dir, name):
         slice_image = sitk.Cast(slice_image, sitk.sitkUInt8)
        
         # Write the PNG image
-        png_filename = os.path.join(out_dir, f'slice_{i:03d}.png')
-        sitk.WriteImage(slice_image, png_filename)
+        png_filename = os.path.join(name, f'slice_{i:03d}.png')
+        sitk.WriteImage(slice_image, os.path.join(out_dir, png_filename))
+        filenames.append(png_filename)
+    return filenames
 
 # Read Images
 def read_images(input_data_directory): 
@@ -85,7 +93,6 @@ def getPlanes(image):
 def createGltf(image, out_dir, lower_threshold = 500,  upper_threshold = 1000):
      # -300 Soft tissue threshold for CT, 500 for bone. 1000 upper for bone density 
     array = sitk.GetArrayFromImage(image)
-
     binary_mask = np.logical_and(array > lower_threshold, array < upper_threshold)
     verts, faces, _, _ = measure.marching_cubes(binary_mask, level=0.5)
     mesh = trimesh.Trimesh(vertices=verts, faces=faces)
@@ -96,24 +103,31 @@ def createGltf(image, out_dir, lower_threshold = 500,  upper_threshold = 1000):
     o3d_mesh = o3d_mesh.filter_smooth_laplacian(number_of_iterations=10)
     o3d_mesh = o3d_mesh.filter_smooth_taubin(number_of_iterations=10)
 
-    if not os.path.exists(out_dir):
-        os.makedirs(out_dir)
-    o3d.io.write_triangle_mesh(os.path.join(out_dir, "model.gltf"), o3d_mesh)
+    makeDirIfNotExists(out_dir)
+    filename = "model.gltf"
+    o3d.io.write_triangle_mesh(os.path.join(out_dir, filename), o3d_mesh)
+    return filename
 
 def main():
     if not len(sys.argv) == 3: 
-        print(f"Usage : {sys.argv[0]} input_folder output_folder {len(sys.argv)}")
+        print(f"Usage : {sys.argv[0]} input_dicom_folder output_folder {len(sys.argv)}")
         sys.exit(1)
     
     input_dir = sys.argv[1]
     out_dir = sys.argv[2]
+    useAdaptiveHistogram = False
 
+    result = {}
     images = read_images(input_dir)
     planes = getPlanes(images)
-    writeSlices(createSlices(planes["axial"], True), out_dir, "axial")
-    writeSlices(createSlices(planes["coronal"], True), out_dir, "coronal")
-    writeSlices(createSlices(planes["saggital"], True), out_dir , "saggital")
-    createGltf(images, out_dir)
+    result["axial"] = writeSlices(createSlices(planes["axial"], useAdaptiveHistogram), out_dir, "axial")
+    result["coronal"] = writeSlices(createSlices(planes["coronal"], useAdaptiveHistogram), out_dir, "coronal")
+    result["saggital"] = writeSlices(createSlices(planes["saggital"], useAdaptiveHistogram), out_dir, "saggital")
+    result["gltf"] = createGltf(images, out_dir)
+
+    f = open(os.path.join(out_dir,"index.json"), "w")
+    f.write(json.dumps(result))
+    f.close()
 
 if __name__ == "__main__":
     main()

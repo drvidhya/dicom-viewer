@@ -14,18 +14,36 @@ def makeDirIfNotExists(*path):
         os.makedirs(dir)
     return dir
 
-def progress_bar(iteration, total, prefix='', suffix='', length=30, fill='█'):
-    percent = ("{0:.1f}").format(100 * (iteration / float(total)))
-    filled_length = int(length * iteration // total)
-    bar = fill * filled_length + '-' * (length - filled_length)
-    sys.stdout.write(f'\r{prefix} |{bar}| {percent}% {suffix} \033[K')
-    sys.stdout.flush()
+class ProgressBar: 
+    def __init__(self, total, prefix='', suffix = '', length=30, fill='█'):
+        self.total = total
+        self.prefix = prefix
+        self.suffix = suffix
+        self.length = length
+        self.fill = fill
+        self.iteration = 0
+        self.render()
+
+    def render(self):
+        percent = ("{0:.1f}").format(100 * (self.iteration / float(self.total)))
+        filled_length = int(self.length * self.iteration // self.total)
+        bar = self.fill * filled_length + '-' * (self.length - filled_length)
+        sys.stdout.write(f'\r{self.prefix} |{bar}| {percent}% {self.suffix} \033[K')
+        sys.stdout.flush()
+    
+    def val(self, val):
+        self.iteration = val
+        self.render()
+        
+    
+    
 
 def createSlices(input_image, useAdaptiveHistogram=False):
     result_slices = []
     count = input_image.GetDepth()
+    progress_bar = ProgressBar(count, prefix='Create Slices:')
     for i in range(0, count):
-        progress_bar(i, count, prefix='Create Slices:', suffix=' ')
+        progress_bar.val(i)
         slice = input_image[:, :, i]
         if useAdaptiveHistogram:
             slice = sitk.AdaptiveHistogramEqualization(slice, slice.GetSize())
@@ -36,9 +54,11 @@ def writeSlices(slices, out_dir, name):
     makeDirIfNotExists(out_dir, name)
 
     filenames = []
+    progress_bar = ProgressBar(len(slices)-1, prefix=f'Write : {name}')
+
     # Iterate over each slice and save as PNG
     for i in range(len(slices)):
-        progress_bar(i, len(slices)-1, prefix='Write :' + out_dir, suffix='')
+        progress_bar.val(i)
 
         # Extract the slice
         slice_image = slices[i]
@@ -91,21 +111,31 @@ def getPlanes(image):
 
 
 def createGltf(image, out_dir, lower_threshold = 500,  upper_threshold = 1000):
+    progress_bar = ProgressBar(5, prefix='Generate GLTF')
+
      # -300 Soft tissue threshold for CT, 500 for bone. 1000 upper for bone density 
     array = sitk.GetArrayFromImage(image)
     binary_mask = np.logical_and(array > lower_threshold, array < upper_threshold)
     verts, faces, _, _ = measure.marching_cubes(binary_mask, level=0.5)
     mesh = trimesh.Trimesh(vertices=verts, faces=faces)
+    progress_bar.val(1)
 
     o3d_mesh = o3d.geometry.TriangleMesh()
     o3d_mesh.vertices = o3d.utility.Vector3dVector(mesh.vertices)
     o3d_mesh.triangles = o3d.utility.Vector3iVector(mesh.faces)
-    o3d_mesh = o3d_mesh.filter_smooth_laplacian(number_of_iterations=10)
-    o3d_mesh = o3d_mesh.filter_smooth_taubin(number_of_iterations=10)
 
+    progress_bar.val(2)
+    o3d_mesh = o3d_mesh.filter_smooth_laplacian(number_of_iterations=10)
+    
+    progress_bar.val(3)
+    o3d_mesh = o3d_mesh.filter_smooth_taubin(number_of_iterations=10)
+    
+    progress_bar.val(4)
     makeDirIfNotExists(out_dir)
+    
     filename = "model.gltf"
     o3d.io.write_triangle_mesh(os.path.join(out_dir, filename), o3d_mesh)
+    progress_bar.val(5)
     return filename
 
 def main():
@@ -115,7 +145,7 @@ def main():
     
     input_dir = sys.argv[1]
     out_dir = sys.argv[2]
-    useAdaptiveHistogram = False
+    useAdaptiveHistogram = True
 
     result = {}
     images = read_images(input_dir)

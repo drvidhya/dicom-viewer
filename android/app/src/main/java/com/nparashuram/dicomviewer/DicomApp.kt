@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -22,10 +23,6 @@ object SelectorRoute
 @Serializable
 data class ViewerRoute(val url: String)
 
-@Serializable
-data class DownloadRoute(val url: String)
-
-
 @Composable
 fun DicomApp(pDicomRepo: PDicomRepo) {
     val viewModel = viewModel<PDicomViewModel>(factory = PDicomViewModelFactory(pDicomRepo))
@@ -35,7 +32,9 @@ fun DicomApp(pDicomRepo: PDicomRepo) {
             val navController = rememberNavController()
             NavHost(
                 navController, startDestination = SelectorRoute,
-                modifier = Modifier.padding(innerPadding)
+                modifier = Modifier
+                    .padding(horizontal = 10.dp)
+                    .padding(bottom = innerPadding.calculateBottomPadding())
             ) {
                 composable<SelectorRoute> {
                     SelectorScreen(viewModel) { url ->

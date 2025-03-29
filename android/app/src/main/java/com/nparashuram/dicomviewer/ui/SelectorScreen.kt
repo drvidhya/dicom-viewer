@@ -1,5 +1,6 @@
 package com.nparashuram.dicomviewer.ui
 
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -7,8 +8,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -52,19 +53,18 @@ fun SelectorScreen(viewModel: PDicomViewModel, onSelect: (String) -> Unit) {
 
         LazyColumn {
             items(pDicomList.keys.toList()) {
-                Card(it, pDicomList[it], viewModel) {
+                DetailsCard(it, pDicomList[it], viewModel) {
                     selectedUrl = it
                 }
             }
         }
 
-        OutlinedTextField(
+        TextField(
             value = selectedUrl ?: "",
             onValueChange = { selectedUrl = it },
             label = { Text("DiCom Source URL") },
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(5.dp)
         )
 
         Button(
@@ -84,13 +84,21 @@ fun SelectorScreen(viewModel: PDicomViewModel, onSelect: (String) -> Unit) {
 }
 
 @Composable
-fun Card(url: String, storageLocation: String?, viewModel: PDicomViewModel, onClick: () -> Unit) {
-    Column(modifier = Modifier.fillMaxWidth()) {
+fun DetailsCard(url: String, storageLocation: String?, viewModel: PDicomViewModel, onClick: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 10.dp),
+    ) {
         Text(url)
         if (storageLocation != null) {
             Text(storageLocation)
         }
-        Row(modifier = Modifier.align(Alignment.CenterHorizontally)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
             if (storageLocation != null) {
                 Text(text = "Downloaded")
             }

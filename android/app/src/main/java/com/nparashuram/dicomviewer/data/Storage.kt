@@ -15,11 +15,6 @@ class Storage internal constructor(val dir: File) {
         sink.close()
     }
 
-    fun getFile(filename: String): String {
-        val file = File(dir, filename)
-        return file.readText()
-    }
-
     fun save(filename: String, data: String) {
         val file = getFileFromFilename(filename)
         file.writeText(data)
@@ -30,7 +25,9 @@ class Storage internal constructor(val dir: File) {
     }
 
     fun readIndex(): PDicomData {
-        return Json.decodeFromString<PDicomData>(getFile("index.json"))
+        val file = File(dir, "index.json")
+        val text = file.readText()
+        return Json.decodeFromString<PDicomData>(text)
     }
 
     private fun getFileFromFilename(filename: String): File {

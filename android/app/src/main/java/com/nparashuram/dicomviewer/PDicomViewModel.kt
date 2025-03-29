@@ -19,7 +19,15 @@ data class PDicomData(
     val sagittal: List<String>,
     val gltf: String,
     var url: String? = null,
-)
+) {
+    fun getSlice(plane: Plane): List<String> {
+        return when (plane) {
+            Plane.AXIAL -> axial
+            Plane.CORONAL -> coronal
+            Plane.SAGITTAL -> sagittal
+        }
+    }
+}
 
 typealias StatusUpdateFn = (StatusCode, String?) -> Unit
 
@@ -31,6 +39,15 @@ class PDicomViewModel(
 
     private val _selectedPDicom = MutableStateFlow<PDicomData?>(null)
     val selectedPDicom: StateFlow<PDicomData?> = _selectedPDicom.asStateFlow()
+
+    private val _selectedSlice = MutableStateFlow(
+        mapOf(
+            Plane.AXIAL to 0,
+            Plane.CORONAL to 0,
+            Plane.SAGITTAL to 0
+        )
+    )
+    val selectedSlice: StateFlow<Map<Plane, Int>> = _selectedSlice.asStateFlow()
 
     /**
      * Hydrates the _pDicomList from disk
@@ -76,7 +93,7 @@ class PDicomViewModel(
      * Deletes downloaded PDicomData, also removes element from list of selected items
      */
     fun delete(url: String) {
-        val storageLocation = pDicomList.value.get(url)
+        val storageLocation = pDicomList.value[url]
         var done = false
         if (storageLocation != null) {
             done = pDicomRepo.remove(storageLocation)
@@ -84,6 +101,10 @@ class PDicomViewModel(
         if (done) {
             _pDicomList.update { it.minus(url) }
         }
+    }
+
+    fun updateSelectedSlice(plane: Plane, value: Int) {
+        _selectedSlice.update { it + (plane to value) }
     }
 }
 
@@ -100,4 +121,8 @@ enum class StatusCode {
     PROGRESS,
     SUCCESS,
     NONE
+}
+
+enum class Plane {
+    AXIAL, CORONAL, SAGITTAL
 }

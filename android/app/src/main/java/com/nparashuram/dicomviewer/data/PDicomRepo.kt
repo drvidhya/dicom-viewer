@@ -1,6 +1,14 @@
 package com.nparashuram.dicomviewer.data
 
+import android.content.Context
+import android.graphics.drawable.ShapeDrawable
 import android.util.Log
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.core.graphics.drawable.toBitmap
+import coil.ImageLoader
+import coil.request.CachePolicy
+import coil.request.ImageRequest
 import com.nparashuram.dicomviewer.PDicomData
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -15,6 +23,7 @@ import kotlin.random.Random
 class PDicomRepo(
     private val okHttpClient: OkHttpClient,
     private val storageFactory: StorageFactory,
+    private val imageLoader: ImageLoader,
 ) {
 
     /**
@@ -34,6 +43,18 @@ class PDicomRepo(
     fun load(storageLocation: String): PDicomData {
         val storage = storageFactory.get(storageLocation)
         return storage.readIndex()
+    }
+
+    suspend fun loadImage(storageLocation: String, file: String, context: Context): ImageBitmap? {
+        val storage = storageFactory.get(storageLocation)
+        val src = storage.getImageFile(file)
+        val imageRequest = ImageRequest.Builder(context)
+            .data(src)
+            .memoryCachePolicy(CachePolicy.DISABLED)
+            .build()
+
+        val drawable = imageLoader.execute(imageRequest).drawable ?: ShapeDrawable()
+        return drawable.toBitmap().asImageBitmap()
     }
 
     /**

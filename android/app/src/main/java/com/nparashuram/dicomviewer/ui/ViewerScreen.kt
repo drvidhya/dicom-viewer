@@ -2,7 +2,10 @@ package com.nparashuram.dicomviewer.ui
 
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
@@ -26,7 +29,8 @@ import com.nparashuram.dicomviewer.ui.components.ImageSliceSelector
 @Composable
 fun ViewerScreen(location: String, viewModel: PDicomViewModel, onClose: () -> Unit) {
     val selectedPDicom = viewModel.selectedPDicom.collectAsState().value
-    val selectedSlice = viewModel.selectedSlice.collectAsState().value
+    val selectedSliceIndex = viewModel.selectedSliceIndex.collectAsState().value
+    val selectedSliceImg = viewModel.selectedSliceImg.collectAsState().value
 
     var statusCode: StatusCode? by remember { mutableStateOf(StatusCode.NONE) }
     var statusMessage: String? by remember { mutableStateOf(null) }
@@ -46,23 +50,24 @@ fun ViewerScreen(location: String, viewModel: PDicomViewModel, onClose: () -> Un
             Button(onClick = { onClose() }) { Text("Cancel") }
         }
     } else {
-        Column {
-            Row(
-                modifier = Modifier
-                    .align(Alignment.CenterHorizontally),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text("Viewer Screen", fontSize = 20.sp, modifier = Modifier.padding(5.dp))
-                OutlinedButton(onClick = { onClose() }) { Text(text = "x") }
-            }
-            Text("Location: $location")
-
-            Plane.entries.map { plane ->
-                ImageSliceSelector(plane, viewModel)
+        LazyColumn {
+            item {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Viewer Screen", fontSize = 20.sp, modifier = Modifier.padding(5.dp))
+                    OutlinedButton(onClick = { onClose() }) { Text(text = "x") }
+                }
+                Text("Location: $location")
             }
 
-            Plane.entries.map { plane ->
-                selectedSlice[plane]?.let { ImageSlice(plane, selectedPDicom.getSlice(plane), it) }
+            items(items = Plane.entries) { plane ->
+                selectedSliceIndex[plane]?.let {
+                    Row(modifier = Modifier.fillMaxWidth()) {
+                        ImageSlice(plane, viewModel)
+                        ImageSliceSelector(plane, viewModel)
+                    }
+                }
             }
         }
     }

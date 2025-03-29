@@ -30,6 +30,11 @@ class Storage internal constructor(val dir: File) {
         return Json.decodeFromString<PDicomData>(text)
     }
 
+    fun getImageFile(file: String): File {
+        return File(dir, file)
+
+    }
+
     private fun getFileFromFilename(filename: String): File {
         val file = File(dir, filename)
         val parentFolder = file.parentFile
@@ -38,6 +43,7 @@ class Storage internal constructor(val dir: File) {
         }
         return file
     }
+
 
 }
 

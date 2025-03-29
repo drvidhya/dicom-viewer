@@ -1,11 +1,10 @@
-package com.nparashuram.dicomviewer
+package com.nparashuram.dicomviewer.data
 
 import android.content.Context
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
-import com.nparashuram.dicomviewer.data.PDicomRepo
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -15,21 +14,27 @@ import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
 
 @Serializable
-data class PDicomData(
+data class PDicomFiles(
     val axial: List<String>,
     val coronal: List<String>,
     val sagittal: List<String>,
     val gltf: String,
-    var url: String? = null,
 ) {
     fun getSlice(plane: Plane): List<String> {
         return when (plane) {
-            Plane.AXIAL -> axial
-            Plane.CORONAL -> coronal
-            Plane.SAGITTAL -> sagittal
+            Plane.axial -> axial
+            Plane.coronal -> coronal
+            Plane.sagittal -> sagittal
         }
     }
 }
+
+@Serializable
+data class PDicomData(
+    val url: String,
+    val storageLocation: String,
+    val files: PDicomFiles,
+)
 
 typealias StatusUpdateFn = (StatusCode, String?) -> Unit
 
@@ -44,18 +49,18 @@ class PDicomViewModel(
 
     private val _selectedSliceIndex = MutableStateFlow(
         mapOf(
-            Plane.AXIAL to 0,
-            Plane.CORONAL to 0,
-            Plane.SAGITTAL to 0
+            Plane.axial to 0,
+            Plane.coronal to 0,
+            Plane.sagittal to 0
         )
     )
     val selectedSliceIndex: StateFlow<Map<Plane, Int>> = _selectedSliceIndex.asStateFlow()
 
     private val _selectedSliceImg = MutableStateFlow<Map<Plane, ImageBitmap?>>(
         mapOf(
-            Plane.AXIAL to null,
-            Plane.CORONAL to null,
-            Plane.SAGITTAL to null
+            Plane.axial to null,
+            Plane.coronal to null,
+            Plane.sagittal to null
         )
     )
     val selectedSliceImg: StateFlow<Map<Plane, ImageBitmap?>> = _selectedSliceImg.asStateFlow()
@@ -80,19 +85,10 @@ class PDicomViewModel(
         updateStatus(StatusCode.PROGRESS, "Loading Dicom data")
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                var storageLocation = _pDicomList.value[url]
-                if (storageLocation == null) {
-                    storageLocation =
-                        pDicomRepo.download(url) { msg -> updateStatus(StatusCode.PROGRESS, msg) }
-                }
-
-                val index = pDicomRepo.load(storageLocation)
-                _pDicomList.update { it + (url to storageLocation) }
-                _selectedPDicom.update { index }
+                val location = _pDicomList.value[url] ?: pDicomRepo.download(url, updateStatus)
+                _pDicomList.update { it + (url to location) }
+                _selectedPDicom.update { pDicomRepo.load(location) }
                 updateStatus(StatusCode.SUCCESS, null)
-                if (!pDicomList.value.containsKey(url)) {
-                    _pDicomList.update { it + (url to null) }
-                }
             } catch (e: Exception) {
                 _selectedPDicom.update { null }
                 updateStatus(StatusCode.ERROR, e.message)
@@ -105,13 +101,8 @@ class PDicomViewModel(
      */
     fun delete(url: String) {
         val storageLocation = pDicomList.value[url]
-        var done = false
-        if (storageLocation != null) {
-            done = pDicomRepo.remove(storageLocation)
-        }
-        if (done) {
-            _pDicomList.update { it.minus(url) }
-        }
+        val done = storageLocation?.let { pDicomRepo.remove(it) }
+        if (done == true) _pDicomList.update { it.minus(url) }
     }
 
     fun updateSelectedSlice(plane: Plane, value: Int, context: Context) {
@@ -119,10 +110,15 @@ class PDicomViewModel(
             _selectedSliceIndex.update { it + (plane to value) }
 
             val pDicom = _selectedPDicom.value
-            val slice = pDicom?.getSlice(plane)
-            val storageLocation = _pDicomList.value[pDicom?.url]
+            val slice = pDicom?.files?.getSlice(plane)
+            val storageLocation = pDicom?.storageLocation
             if (slice != null && storageLocation != null) {
-                val img = pDicomRepo.loadImage(storageLocation, pDicom.getSlice(plane)[value], context)
+                val img =
+                    pDicomRepo.loadImage(
+                        storageLocation,
+                        pDicom.files.getSlice(plane)[value],
+                        context
+                    )
                 _selectedSliceImg.update { it + (plane to img) }
             }
         }
@@ -145,5 +141,5 @@ enum class StatusCode {
 }
 
 enum class Plane {
-    AXIAL, CORONAL, SAGITTAL
+    axial, coronal, sagittal
 }

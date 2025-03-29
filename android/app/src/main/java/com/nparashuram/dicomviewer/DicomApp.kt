@@ -12,6 +12,8 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
 import com.nparashuram.dicomviewer.data.PDicomRepo
+import com.nparashuram.dicomviewer.data.PDicomViewModel
+import com.nparashuram.dicomviewer.data.PDicomViewModelFactory
 import com.nparashuram.dicomviewer.ui.SelectorScreen
 import com.nparashuram.dicomviewer.ui.ViewerScreen
 import com.nparashuram.dicomviewer.ui.theme.DicomViewerTheme

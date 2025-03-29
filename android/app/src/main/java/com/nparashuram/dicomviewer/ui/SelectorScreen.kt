@@ -21,8 +21,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.nparashuram.dicomviewer.PDicomViewModel
-import com.nparashuram.dicomviewer.StatusCode
+import com.nparashuram.dicomviewer.data.PDicomViewModel
+import com.nparashuram.dicomviewer.data.StatusCode
 
 @Composable
 fun SelectorScreen(viewModel: PDicomViewModel, onSelect: (String) -> Unit) {

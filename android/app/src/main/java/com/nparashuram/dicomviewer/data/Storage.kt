@@ -1,13 +1,12 @@
 package com.nparashuram.dicomviewer.data
 
-import com.nparashuram.dicomviewer.PDicomData
 import kotlinx.serialization.json.Json
 import okio.BufferedSource
 import okio.buffer
 import okio.sink
 import java.io.File
 
-class Storage internal constructor(val dir: File) {
+class Storage internal constructor(val location: File) {
     fun save(filename: String, data: BufferedSource) {
         val file = getFileFromFilename(filename)
         val sink = file.sink().buffer()
@@ -21,30 +20,34 @@ class Storage internal constructor(val dir: File) {
     }
 
     fun remove(): Boolean {
-        return dir.deleteRecursively()
+        return location.deleteRecursively()
     }
 
-    fun readIndex(): PDicomData {
-        val file = File(dir, "index.json")
+    fun getIndex(): PDicomData {
+        val file = File(location, "index.json")
         val text = file.readText()
         return Json.decodeFromString<PDicomData>(text)
     }
 
+    fun saveIndex(pDicomData: PDicomData) {
+        val file = File(location, "index.json")
+        val text = Json.encodeToString(PDicomData.serializer(), pDicomData)
+        file.writeText(text)
+    }
+
     fun getImageFile(file: String): File {
-        return File(dir, file)
+        return File(location, file)
 
     }
 
     private fun getFileFromFilename(filename: String): File {
-        val file = File(dir, filename)
+        val file = File(location, filename)
         val parentFolder = file.parentFile
         if (parentFolder != null && !parentFolder.exists()) {
             parentFolder.mkdirs()
         }
         return file
     }
-
-
 }
 
 class StorageFactory(private val storageDir: File) {
@@ -53,7 +56,7 @@ class StorageFactory(private val storageDir: File) {
         return Storage(file)
     }
 
-    fun getFolders(): List<Storage> {
+    fun getStorages(): List<Storage> {
         val folder = File(storageDir, "processed-dicom")
         if (folder.isDirectory) {
             val folders = folder.listFiles { file -> file.isDirectory }

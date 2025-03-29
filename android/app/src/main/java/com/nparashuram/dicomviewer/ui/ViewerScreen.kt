@@ -20,9 +20,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.nparashuram.dicomviewer.PDicomViewModel
-import com.nparashuram.dicomviewer.Plane
-import com.nparashuram.dicomviewer.StatusCode
+import com.nparashuram.dicomviewer.data.PDicomViewModel
+import com.nparashuram.dicomviewer.data.Plane
+import com.nparashuram.dicomviewer.data.StatusCode
 import com.nparashuram.dicomviewer.ui.components.ImageSlice
 import com.nparashuram.dicomviewer.ui.components.ImageSliceSelector
 

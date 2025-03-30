@@ -64,8 +64,14 @@ fun ViewerScreen(location: String, viewModel: PDicomViewModel, onClose: () -> Un
             items(items = Plane.entries) { plane ->
                 selectedSliceIndex[plane]?.let {
                     Row(modifier = Modifier.fillMaxWidth()) {
-                        ImageSlice(plane, viewModel)
-                        ImageSliceSelector(plane, viewModel)
+                        ImageSlice(plane, selectedSliceImg[plane])
+                        ImageSliceSelector(
+                            plane,
+                            selectedSliceIndex[plane] ?: 0,
+                            selectedPDicom.files.getSlice(plane).size
+                        ) { plane, value, context ->
+                            viewModel.updateSelectedSlice(plane, value, context)
+                        }
                     }
                 }
             }

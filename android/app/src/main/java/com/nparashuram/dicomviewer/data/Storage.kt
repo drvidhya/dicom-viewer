@@ -14,11 +14,6 @@ class Storage internal constructor(val location: File) {
         sink.close()
     }
 
-    fun save(filename: String, data: String) {
-        val file = getFileFromFilename(filename)
-        file.writeText(data)
-    }
-
     fun remove(): Boolean {
         return location.deleteRecursively()
     }
@@ -37,7 +32,6 @@ class Storage internal constructor(val location: File) {
 
     fun getImageFile(file: String): File {
         return File(location, file)
-
     }
 
     private fun getFileFromFilename(filename: String): File {

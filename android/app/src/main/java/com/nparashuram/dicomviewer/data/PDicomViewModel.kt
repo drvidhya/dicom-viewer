@@ -49,18 +49,14 @@ class PDicomViewModel(
 
     private val _selectedSliceIndex = MutableStateFlow(
         mapOf(
-            Plane.axial to 0,
-            Plane.coronal to 0,
-            Plane.sagittal to 0
+            Plane.axial to 0, Plane.coronal to 0, Plane.sagittal to 0
         )
     )
     val selectedSliceIndex: StateFlow<Map<Plane, Int>> = _selectedSliceIndex.asStateFlow()
 
     private val _selectedSliceImg = MutableStateFlow<Map<Plane, ImageBitmap?>>(
         mapOf(
-            Plane.axial to null,
-            Plane.coronal to null,
-            Plane.sagittal to null
+            Plane.axial to null, Plane.coronal to null, Plane.sagittal to null
         )
     )
     val selectedSliceImg: StateFlow<Map<Plane, ImageBitmap?>> = _selectedSliceImg.asStateFlow()
@@ -70,10 +66,15 @@ class PDicomViewModel(
      */
     fun hydrate(updateStatus: StatusUpdateFn) {
         viewModelScope.launch(Dispatchers.IO) {
-            updateStatus(StatusCode.PROGRESS, "Loading data on device")
-            val list = pDicomRepo.loadFromDevice { msg -> updateStatus(StatusCode.PROGRESS, msg) }
-            _pDicomList.update { it + list }
-            updateStatus(StatusCode.SUCCESS, null)
+            try {
+                updateStatus(StatusCode.PROGRESS, "Loading data on device")
+                val list =
+                    pDicomRepo.loadFromDevice { msg -> updateStatus(StatusCode.PROGRESS, msg) }
+                _pDicomList.update { it + list }
+                updateStatus(StatusCode.SUCCESS, null)
+            } catch (e: Exception) {
+                updateStatus(StatusCode.ERROR, e.message)
+            }
         }
     }
 
@@ -87,7 +88,10 @@ class PDicomViewModel(
             try {
                 val location = _pDicomList.value[url] ?: pDicomRepo.download(url, updateStatus)
                 _pDicomList.update { it + (url to location) }
-                _selectedPDicom.update { pDicomRepo.load(location) }
+                val pDicomRepo = pDicomRepo.load(location)
+                if (pDicomRepo != null) {
+                    _selectedPDicom.update { pDicomRepo }
+                }
                 updateStatus(StatusCode.SUCCESS, null)
             } catch (e: Exception) {
                 _selectedPDicom.update { null }
@@ -113,12 +117,9 @@ class PDicomViewModel(
             val slice = pDicom?.files?.getSlice(plane)
             val storageLocation = pDicom?.storageLocation
             if (slice != null && storageLocation != null) {
-                val img =
-                    pDicomRepo.loadImage(
-                        storageLocation,
-                        pDicom.files.getSlice(plane)[value],
-                        context
-                    )
+                val img = pDicomRepo.loadImage(
+                    storageLocation, pDicom.files.getSlice(plane)[value], context
+                )
                 _selectedSliceImg.update { it + (plane to img) }
             }
         }
@@ -134,10 +135,7 @@ class PDicomViewModelFactory(private val pDicomRepo: PDicomRepo) :
 }
 
 enum class StatusCode {
-    ERROR,
-    PROGRESS,
-    SUCCESS,
-    NONE
+    ERROR, PROGRESS, SUCCESS, NONE
 }
 
 enum class Plane {

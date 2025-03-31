@@ -21,17 +21,21 @@ class PDicomRepo(
      * Parses the processed-dicom folder and gets a map of all saved pDiCom
      */
     fun loadFromDevice(onStatusUpdate: (String) -> Unit): Map<String, String?> {
-        return storageFactory.getStorages()
-            .associate { storage ->
-                onStatusUpdate("Reading ${storage.location}")
-                storage.getIndex().url to storage.location.name
-            }.filter { it.key != "" }
+        val result = mutableMapOf<String, String?>()
+        storageFactory.getStorages().forEach { storage ->
+            onStatusUpdate("Reading ${storage.location}")
+            val url = storage.getIndex()?.url
+            if (url != null) {
+                result[url] = storage.location.name
+            }
+        }
+        return result
     }
 
     /**
      * Load a specific pDiCom file from disk
      */
-    fun load(storageLocation: String): PDicomData {
+    fun load(storageLocation: String): PDicomData? {
         val storage = storageFactory.get(storageLocation)
         return storage.getIndex()
     }
@@ -65,7 +69,6 @@ class PDicomRepo(
         downloader.fetchPDicomFiles(url, onStatusUpdate)
         return storage.location.name
     }
-
 }
 
 private fun getRandomName(): String {

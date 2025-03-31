@@ -18,10 +18,14 @@ class Storage internal constructor(val location: File) {
         return location.deleteRecursively()
     }
 
-    fun getIndex(): PDicomData {
-        val file = File(location, "index.json")
-        val text = file.readText()
-        return Json.decodeFromString<PDicomData>(text)
+    fun getIndex(): PDicomData? {
+        try {
+            val file = File(location, "index.json")
+            val text = file.readText()
+            return Json.decodeFromString<PDicomData>(text)
+        } catch (e: Exception) {
+            return null
+        }
     }
 
     fun saveIndex(pDicomData: PDicomData) {

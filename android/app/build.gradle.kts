@@ -23,8 +23,12 @@ android {
     }
 
     buildTypes {
+        debug {
+            resValue("string", "clear_text_config", "true")
+        }
         release {
             isMinifyEnabled = false
+            resValue("string", "clear_text_config", "false")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

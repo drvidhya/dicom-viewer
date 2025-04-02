@@ -22,6 +22,15 @@ android {
         }
     }
 
+    flavorDimensions += "device"
+    productFlavors {
+        create("mobile") { dimension = "device" }
+        create("quest") {
+            dimension = "device"
+            minSdk = 28
+        }
+    }
+
     buildTypes {
         debug {
             resValue("string", "clear_text_config", "true")
@@ -55,6 +64,8 @@ android {
     }
 }
 
+val questDebugImplementation: Configuration by configurations.creating
+
 dependencies {
 
     implementation(libs.androidx.core.ktx)
@@ -70,6 +81,18 @@ dependencies {
     implementation(libs.logging.interceptor)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.coil.base)
+
+    // Quest MetaSpatial SDK dependencies
+    "questImplementation"(libs.meta.spatial.sdk)
+    "questImplementation"(libs.meta.spatial.sdk.animation)
+    "questImplementation"(libs.meta.spatial.sdk.compose)
+    "questImplementation"(libs.meta.spatial.sdk.physics)
+    "questImplementation"(libs.meta.spatial.sdk.toolkit)
+    "questImplementation"(libs.meta.spatial.sdk.vrsdk)
+    "questImplementation"(libs.meta.spatial.sdk.mruk)
+    "questDebugImplementation"(libs.meta.spatial.sdk.ovrmetrics)
+    "questDebugImplementation"(libs.meta.spatial.sdk.castinputforward)
+    "questDebugImplementation"(libs.meta.spatial.sdk.hotreload)
 
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)

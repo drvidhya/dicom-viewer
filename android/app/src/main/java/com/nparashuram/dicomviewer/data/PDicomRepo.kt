@@ -9,9 +9,10 @@ import coil.ImageLoader
 import coil.request.CachePolicy
 import coil.request.ImageRequest
 import okhttp3.OkHttpClient
+import okhttp3.logging.HttpLoggingInterceptor
 import kotlin.random.Random
 
-class PDicomRepo(
+class PDicomRepo private constructor(
     private val okHttpClient: OkHttpClient,
     private val storageFactory: StorageFactory,
     private val imageLoader: ImageLoader,
@@ -43,10 +44,8 @@ class PDicomRepo(
     suspend fun loadImage(storageLocation: String, file: String, context: Context): ImageBitmap {
         val storage = storageFactory.get(storageLocation)
         val src = storage.getImageFile(file)
-        val imageRequest = ImageRequest.Builder(context)
-            .data(src)
-            .memoryCachePolicy(CachePolicy.DISABLED)
-            .build()
+        val imageRequest =
+            ImageRequest.Builder(context).data(src).memoryCachePolicy(CachePolicy.DISABLED).build()
 
         val drawable = imageLoader.execute(imageRequest).drawable ?: ShapeDrawable()
         return drawable.toBitmap().asImageBitmap()
@@ -69,12 +68,33 @@ class PDicomRepo(
         downloader.fetchPDicomFiles(url, onStatusUpdate)
         return storage.location.name
     }
+
+    companion object {
+        @Volatile
+        private var instance: PDicomRepo? = null
+        fun getInstance(context: Context): PDicomRepo {
+            val okHttpClient = OkHttpClient.Builder()
+                .addInterceptor(HttpLoggingInterceptor().apply { setLevel(HttpLoggingInterceptor.Level.BASIC) })
+                .build()
+
+            val imageLoader = ImageLoader.Builder(context).okHttpClient(okHttpClient)
+                .memoryCachePolicy(CachePolicy.ENABLED).diskCachePolicy(CachePolicy.DISABLED)
+                .build()
+
+            return instance ?: synchronized(this) {
+                instance ?: PDicomRepo(
+                    storageFactory = StorageFactory(context.filesDir),
+                    okHttpClient = okHttpClient,
+                    imageLoader = imageLoader
+                ).also { instance = it }
+            }
+        }
+    }
 }
 
 private fun getRandomName(): String {
     val charPool: List<Char> = ('a'..'z') + ('A'..'Z')
-    val folderName = (1..20)
-        .map { Random.nextInt(0, charPool.size).let { charPool[it] } }
-        .joinToString("")
+    val folderName =
+        (1..20).map { Random.nextInt(0, charPool.size).let { charPool[it] } }.joinToString("")
     return folderName
 }

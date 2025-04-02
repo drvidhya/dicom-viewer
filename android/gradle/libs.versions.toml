@@ -13,6 +13,7 @@ composeBom = "2025.03.01"
 navigationCompose = "2.8.9"
 okhttp = "4.12.0"
 loggingInterceptor = "4.10.0"
+metaSpatialSdk = "0.5.5"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -34,6 +35,18 @@ kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serializa
 logging-interceptor = { module = "com.squareup.okhttp3:logging-interceptor", version.ref = "loggingInterceptor" }
 okhttp = { module = "com.squareup.okhttp3:okhttp", version.ref = "okhttp" }
 coil-base = { module = "io.coil-kt:coil-base", version.ref = "coilBase" }
+
+# Meta Spatial SDK
+meta-spatial-sdk = { module = "com.meta.spatial:meta-spatial-sdk", version.ref = "metaSpatialSdk" }
+meta-spatial-sdk-animation = { module = "com.meta.spatial:meta-spatial-sdk-animation", version.ref = "metaSpatialSdk" }
+meta-spatial-sdk-compose = { module = "com.meta.spatial:meta-spatial-sdk-compose", version.ref = "metaSpatialSdk" }
+meta-spatial-sdk-ovrmetrics = { module = "com.meta.spatial:meta-spatial-sdk-ovrmetrics", version.ref = "metaSpatialSdk" }
+meta-spatial-sdk-physics = { module = "com.meta.spatial:meta-spatial-sdk-physics", version.ref = "metaSpatialSdk" }
+meta-spatial-sdk-toolkit = { module = "com.meta.spatial:meta-spatial-sdk-toolkit", version.ref = "metaSpatialSdk" }
+meta-spatial-sdk-vrsdk = { module = "com.meta.spatial:meta-spatial-sdk-vr", version.ref = "metaSpatialSdk" }
+meta-spatial-sdk-mruk = { module = "com.meta.spatial:meta-spatial-sdk-mruk", version.ref = "metaSpatialSdk" }
+meta-spatial-sdk-castinputforward = { module = "com.meta.spatial:meta-spatial-sdk-castinputforward", version.ref = "metaSpatialSdk" }
+meta-spatial-sdk-hotreload = { module = "com.meta.spatial:meta-spatial-sdk-hotreload", version.ref = "metaSpatialSdk" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

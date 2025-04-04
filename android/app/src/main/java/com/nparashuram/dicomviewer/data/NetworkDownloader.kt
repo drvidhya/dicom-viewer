@@ -22,7 +22,7 @@ class NetworkDownloader(private val okHttpClient: OkHttpClient, private val stor
         pDicomFiles: PDicomFiles,
         onStatusUpdate: StatusUpdateFn,
     ) {
-        val gltfFilename = "model.gltf"
+        val gltfFilename = "model.glb"
         fetch(URI(url).resolve(pDicomFiles.gltf).toURL(), onStatusUpdate) { data ->
             storage.save(gltfFilename, data)
         }
@@ -72,7 +72,6 @@ class NetworkDownloader(private val okHttpClient: OkHttpClient, private val stor
                 response.close()
                 throw IOException("Error fetching ${url}, Data is null")
             }
-            onStatusUpdate(StatusCode.PROGRESS, "Download complete - $url")
             onData(data)
         } else {
             response.close()

@@ -27,7 +27,7 @@ import com.nparashuram.dicomviewer.data.StatusCode
 @Composable
 fun SelectorScreen(viewModel: PDicomViewModel, onSelect: (String) -> Unit) {
     val pDicomList = viewModel.pDicomList.collectAsState().value
-    var selectedUrl: String? by remember { mutableStateOf("http://localhost:8080/index.json") }
+    var selectedUrl: String? by remember { mutableStateOf("https://nparashuram.github.io/dicom-viewer/sample1/index.json") }
 
     var statusCode: StatusCode? by remember { mutableStateOf(StatusCode.NONE) }
     var statusMessage: String? by remember { mutableStateOf(null) }

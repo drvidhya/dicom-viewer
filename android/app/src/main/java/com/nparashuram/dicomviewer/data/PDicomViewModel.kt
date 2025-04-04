@@ -54,13 +54,6 @@ class PDicomViewModel(
     )
     val selectedSliceIndex: StateFlow<Map<Plane, Int>> = _selectedSliceIndex.asStateFlow()
 
-    private val _selectedSliceImg = MutableStateFlow<Map<Plane, ImageBitmap?>>(
-        mapOf(
-            Plane.axial to null, Plane.coronal to null, Plane.sagittal to null
-        )
-    )
-    val selectedSliceImg: StateFlow<Map<Plane, ImageBitmap?>> = _selectedSliceImg.asStateFlow()
-
     /**
      * Hydrates the _pDicomList from disk
      */
@@ -109,20 +102,22 @@ class PDicomViewModel(
         if (done == true) _pDicomList.update { it.minus(url) }
     }
 
-    fun updateSelectedSlice(plane: Plane, value: Int, context: Context) {
-        viewModelScope.launch(Dispatchers.IO) {
-            _selectedSliceIndex.update { it + (plane to value) }
+    fun updateSelectedSlice(plane: Plane, value: Int) {
+        _selectedSliceIndex.update { it + (plane to value) }
+    }
 
-            val pDicom = _selectedPDicom.value
-            val slice = pDicom?.files?.getSlice(plane)
-            val storageLocation = pDicom?.storageLocation
-            if (slice != null && storageLocation != null) {
-                val img = pDicomRepo.loadImage(
-                    storageLocation, pDicom.files.getSlice(plane)[value], context
-                )
-                _selectedSliceImg.update { it + (plane to img) }
-            }
+    suspend fun loadImage(plane: Plane, context: Context): ImageBitmap? {
+        val pDicom = _selectedPDicom.value
+        val value = _selectedSliceIndex.value[plane]
+        val slice = pDicom?.files?.getSlice(plane)
+        val storageLocation = pDicom?.storageLocation
+        if (slice != null && value != null && storageLocation != null) {
+            val img = pDicomRepo.loadImage(
+                storageLocation, pDicom.files.getSlice(plane)[value], context
+            )
+            return img
         }
+        return null
     }
 }
 

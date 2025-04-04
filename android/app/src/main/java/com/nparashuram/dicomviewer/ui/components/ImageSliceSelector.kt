@@ -1,24 +1,31 @@
 package com.nparashuram.dicomviewer.ui.components
 
-import android.content.Context
 import androidx.compose.material3.Slider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.runtime.collectAsState
+import com.nparashuram.dicomviewer.data.PDicomViewModel
 import com.nparashuram.dicomviewer.data.Plane
 
 @Composable
 fun ImageSliceSelector(
-    plane: Plane, index: Int, max: Int, onUpdate: (Plane, Int, Context) -> Unit,
+    plane: Plane, viewModel: PDicomViewModel,
 ) {
-    val context = LocalContext.current
+    val selectedPDicom = viewModel.selectedPDicom.collectAsState().value
+    val selectedSliceIndex = viewModel.selectedSliceIndex.collectAsState().value
+
+    val max = selectedPDicom?.files?.getSlice(plane)?.size ?: 0
+
     LaunchedEffect(Unit) {
-        onUpdate(plane, max / 2, context)
+        viewModel.updateSelectedSlice(plane, 0)
     }
 
-    Slider(
-        value = index.toFloat(),
-        onValueChange = { onUpdate(plane, it.toInt(), context) },
-        valueRange = 0f..(max - 1).toFloat()
-    )
+    val index = selectedSliceIndex[plane]
+    if (selectedPDicom != null && index != null) {
+        Slider(
+            value = index.toFloat(),
+            onValueChange = { viewModel.updateSelectedSlice(plane, it.toInt()) },
+            valueRange = 0f..(max - 1).toFloat()
+        )
+    }
 }

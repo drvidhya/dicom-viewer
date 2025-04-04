@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.material3.Button
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
 import com.meta.spatial.compose.composePanel
@@ -28,8 +29,31 @@ import com.nparashuram.dicomviewer.ui.components.ImageSliceSelector
 @Composable
 fun ViewerScreen(location: String, viewModel: PDicomViewModel, onClose: () -> Unit) {
     val selectedPDicom = viewModel.selectedPDicom.collectAsState().value
-    val selectedSliceIndex = viewModel.selectedSliceIndex.collectAsState().value
-    val selectedSliceImg = viewModel.selectedSliceImg.collectAsState().value
+
+    LaunchedEffect(Unit) {
+        SpatialActivityManager.executeOnVrActivity<AppSystemActivity> { immersiveActivity ->
+            Plane.entries.forEachIndexed { index, plane ->
+                val panelId = 300 + index
+                Entity.createPanelEntity(
+                    panelId,
+                    Transform(
+                        Pose(
+                            Vector3(index.toFloat() - 1f, 2f, 2f),
+                            Quaternion(0f, 180f, 0f)
+                        )
+                    ),
+                    Grabbable(),
+                )
+                immersiveActivity.registerPanel(PanelRegistration(panelId) {
+                    composePanel {
+                        setContent {
+                            ImageSlice(plane, viewModel)
+                        }
+                    }
+                })
+            }
+        }
+    }
 
     if (selectedPDicom == null) {
         Column {
@@ -39,36 +63,10 @@ fun ViewerScreen(location: String, viewModel: PDicomViewModel, onClose: () -> Un
     } else {
         Column {
             Plane.entries.map { plane ->
-                selectedSliceIndex[plane]?.let {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(text = plane.name)
-                        ImageSliceSelector(
-                            plane,
-                            selectedSliceIndex[plane] ?: 0,
-                            selectedPDicom.files.getSlice(plane).size
-                        ) { plane, value, context ->
-                            viewModel.updateSelectedSlice(plane, value, context)
-                        }
-                    }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(text = plane.name)
+                    ImageSliceSelector(plane, viewModel)
                 }
-
-            }
-        }
-        SpatialActivityManager.executeOnVrActivity<AppSystemActivity> { immersiveActivity ->
-            Plane.entries.forEachIndexed { index, plane ->
-                val panelId = 300 + index
-                Entity.createPanelEntity(
-                    panelId,
-                    Transform(Pose(Vector3(index.toFloat() -1f, 2f, 2f), Quaternion(0f, 180f, 0f))),
-                    Grabbable(),
-                )
-                immersiveActivity.registerPanel(PanelRegistration(panelId) {
-                    composePanel {
-                        setContent {
-                            ImageSlice(plane, selectedSliceImg[plane])
-                        }
-                    }
-                })
             }
         }
     }

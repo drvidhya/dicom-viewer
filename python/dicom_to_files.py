@@ -106,12 +106,12 @@ def getPlanes(image):
     return {
             "axial": axial_image, 
             "coronal": coronal_image, 
-            "saggital": sagittal_image
+            "sagittal": sagittal_image
             }
 
 
 def createGltf(image, out_dir, lower_threshold = 500,  upper_threshold = 1000):
-    progress_bar = ProgressBar(5, prefix='Generate GLTF')
+    progress_bar = ProgressBar(6, prefix='Generate .glb')
 
      # -300 Soft tissue threshold for CT, 500 for bone. 1000 upper for bone density 
     array = sitk.GetArrayFromImage(image)
@@ -125,17 +125,31 @@ def createGltf(image, out_dir, lower_threshold = 500,  upper_threshold = 1000):
     o3d_mesh.triangles = o3d.utility.Vector3iVector(mesh.faces)
 
     progress_bar.val(2)
-    o3d_mesh = o3d_mesh.filter_smooth_laplacian(number_of_iterations=10)
+    o3d_mesh = o3d_mesh.filter_smooth_laplacian(number_of_iterations=20)
     
     progress_bar.val(3)
-    o3d_mesh = o3d_mesh.filter_smooth_taubin(number_of_iterations=10)
-    
+    o3d_mesh = o3d_mesh.filter_smooth_taubin(number_of_iterations=20)
+    target_number_of_faces = int(len(mesh.triangles) * 0.3)  # Simplify to 50% of original faces
+    o3d_mesh = o3d_mesh.simplify_quadric_decimation(target_number_of_faces)
+
+
     progress_bar.val(4)
+    vertices = np.asarray(o3d_mesh.vertices)  # Get vertex positions
+    faces = np.asarray(o3d_mesh.triangles)
+    mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
+    mesh.visual.material = trimesh.visual.material.PBRMaterial(
+        name="CustomMaterial",
+        baseColorFactor=[1.0, 0.0, 0.0, 1.0],  # Red color (RGBA)
+        metallicFactor=0.5,  # Metallic look
+        roughnessFactor=0.5  # Roughness
+    )
+
+    progress_bar.val(5)
     makeDirIfNotExists(out_dir)
     
-    filename = "model.gltf"
-    o3d.io.write_triangle_mesh(os.path.join(out_dir, filename), o3d_mesh)
-    progress_bar.val(5)
+    filename = "model.glb"
+    mesh.export(os.path.join(out_dir, filename))
+    progress_bar.val(6)
     return filename
 
 def main():
@@ -145,14 +159,14 @@ def main():
     
     input_dir = sys.argv[1]
     out_dir = sys.argv[2]
-    useAdaptiveHistogram = True
+    useAdaptiveHistogram = False
 
     result = {}
     images = read_images(input_dir)
     planes = getPlanes(images)
-    result["axial"] = writeSlices(createSlices(planes["axial"], useAdaptiveHistogram), out_dir, "axial")
-    result["coronal"] = writeSlices(createSlices(planes["coronal"], useAdaptiveHistogram), out_dir, "coronal")
-    result["sagittal"] = writeSlices(createSlices(planes["sagittal"], useAdaptiveHistogram), out_dir, "sagittal")
+    # result["axial"] = writeSlices(createSlices(planes["axial"], useAdaptiveHistogram), out_dir, "axial")
+    # result["coronal"] = writeSlices(createSlices(planes["coronal"], useAdaptiveHistogram), out_dir, "coronal")
+    # result["sagittal"] = writeSlices(createSlices(planes["sagittal"], useAdaptiveHistogram), out_dir, "sagittal")
     result["gltf"] = createGltf(images, out_dir)
 
     f = open(os.path.join(out_dir,"index.json"), "w")

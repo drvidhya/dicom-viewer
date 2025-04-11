@@ -27,7 +27,6 @@ import com.nparashuram.dicomviewer.ui.components.ImageSliceSelector
 fun ViewerScreen(location: String, viewModel: PDicomViewModel, onClose: () -> Unit) {
     val selectedPDicom = viewModel.selectedPDicom.collectAsState().value
     val selectedSliceIndex = viewModel.selectedSliceIndex.collectAsState().value
-    val selectedSliceImg = viewModel.selectedSliceImg.collectAsState().value
 
     if (selectedPDicom == null) {
         Column {
@@ -50,7 +49,7 @@ fun ViewerScreen(location: String, viewModel: PDicomViewModel, onClose: () -> Un
             items(Plane.entries) { plane ->
                 selectedSliceIndex[plane]?.let {
                     Row(modifier = Modifier.fillMaxWidth()) {
-                        ImageSlice(plane, selectedSliceImg[plane])
+                        ImageSlice(plane, viewModel)
                     }
                 }
             }
@@ -60,13 +59,7 @@ fun ViewerScreen(location: String, viewModel: PDicomViewModel, onClose: () -> Un
                         selectedSliceIndex[plane]?.let {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text(text = plane.name)
-                                ImageSliceSelector(
-                                    plane,
-                                    selectedSliceIndex[plane] ?: 0,
-                                    selectedPDicom.files.getSlice(plane).size
-                                ) { plane, value, context ->
-                                    viewModel.updateSelectedSlice(plane, value, context)
-                                }
+                                ImageSliceSelector(plane, viewModel)
                             }
                         }
                     }

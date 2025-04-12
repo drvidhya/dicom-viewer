@@ -1,7 +1,10 @@
 package com.nparashuram.dicomviewer.ui
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -27,7 +30,7 @@ import com.nparashuram.dicomviewer.data.StatusCode
 @Composable
 fun SelectorScreen(viewModel: PDicomViewModel, onSelect: (String) -> Unit) {
     val pDicomList = viewModel.pDicomList.collectAsState().value
-    var selectedUrl: String? by remember { mutableStateOf("https://nparashuram.github.io/dicom-viewer/sample1/index.json") }
+    var selectedUrl: String? by remember { mutableStateOf(null) }
 
     var statusCode: StatusCode? by remember { mutableStateOf(StatusCode.NONE) }
     var statusMessage: String? by remember { mutableStateOf(null) }
@@ -51,10 +54,24 @@ fun SelectorScreen(viewModel: PDicomViewModel, onSelect: (String) -> Unit) {
             Text("Updating Dicom sources...")
         }
 
-        LazyColumn {
-            items(pDicomList.keys.toList()) {
-                DetailsCard(it, pDicomList[it], viewModel) {
-                    selectedUrl = it
+        if (pDicomList.keys.toList().isEmpty()) {
+            @OptIn(ExperimentalLayoutApi::class)
+            FlowRow(Modifier.padding(4.dp)) {
+                Text("Try some sample dicom files from ")
+                listOf(
+                    "http://localhost:8080/index.json",
+                    "https://nparashuram.github.io/dicom-viewer/sample1/index.json",
+                    "http://192.168.1.222:8080/index.json",
+                ).map {
+                    Text(modifier = Modifier.clickable { selectedUrl = it }, text = it)
+                }
+            }
+        } else {
+            LazyColumn {
+                items(pDicomList.keys.toList()) {
+                    DetailsCard(it, pDicomList[it], viewModel) {
+                        selectedUrl = it
+                    }
                 }
             }
         }
@@ -84,7 +101,12 @@ fun SelectorScreen(viewModel: PDicomViewModel, onSelect: (String) -> Unit) {
 }
 
 @Composable
-fun DetailsCard(url: String, storageLocation: String?, viewModel: PDicomViewModel, onClick: () -> Unit) {
+fun DetailsCard(
+    url: String,
+    storageLocation: String?,
+    viewModel: PDicomViewModel,
+    onClick: () -> Unit,
+) {
     Column(
         modifier = Modifier
             .fillMaxWidth()

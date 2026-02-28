@@ -1,0 +1,4 @@
+public/data*
+node_modules
+dist
+client-logs.jsonl

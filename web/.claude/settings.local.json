@@ -1,0 +1,28 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm :*::*)",
+      "WebSearch",
+      "Bash(npm run dev:*)",
+      "Bash(cat:*)",
+      "Bash(tree:*)",
+      "Bash(find:*)",
+      "Bash(node :*::*)",
+      "Bash(curl:*)",
+      "Bash(pkill:*)",
+      "Bash(node test-original.cjs:*)",
+      "Bash(chmod:*)",
+      "Bash(/home/axe/_workspace/dicom-2D/run-test.sh:*)",
+      "Bash(npm run build:*)",
+      "Bash(npx vite build)",
+      "Bash(npm install)",
+      "WebFetch(domain:iwsdk.dev)",
+      "Bash(npx tsc:*)",
+      "Bash(node compare-dicom.js:*)",
+      "Bash(node inspect-dicom.js:*)",
+      "Bash(node -e:*)",
+      "Bash(node test-implicit-vr.js:*)",
+      "Bash(node debug-image-loading.js:*)"
+    ]
+  }
+}

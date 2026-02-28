@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DICOM Viewer</title>
+    <style>
+      :root {
+        --bg:       #0a0e14;
+        --bg2:      #131920;
+        --bg3:      #1a2028;
+        --border:   #2a323d;
+        --text:     #e6e6e6;
+        --muted:    #8a919b;
+        --axial:    #00d4aa;
+        --sagittal: #ff6b9d;
+        --coronal:  #7c5cff;
+      }
+
+      *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+      html, body {
+        width: 100%; height: 100%; overflow: hidden;
+        font-family: system-ui, 'Segoe UI', sans-serif;
+        background: var(--bg);
+        color: var(--text);
+      }
+
+      #app { display: flex; flex-direction: column; height: 100%; }
+
+      /* ── Header ── */
+      header {
+        flex-shrink: 0;
+        display: flex; align-items: center; justify-content: space-between;
+        padding: 10px 20px;
+        background: var(--bg2);
+        border-bottom: 1px solid var(--border);
+      }
+
+      .logo { display: flex; align-items: center; gap: 10px; }
+      .logo-badge {
+        width: 34px; height: 34px; border-radius: 8px;
+        background: linear-gradient(135deg, var(--axial), var(--coronal));
+        display: flex; align-items: center; justify-content: center;
+        font-weight: 700; font-size: 12px; color: #000;
+      }
+      .logo h1 { font-size: 16px; font-weight: 500; letter-spacing: -0.3px; }
+
+      /* ── Toolbar ── */
+      .toolbar { display: flex; gap: 8px; }
+      .toolbar-btn {
+        display: flex; align-items: center; gap: 6px;
+        padding: 7px 14px;
+        background: var(--bg3);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        color: var(--text);
+        font-size: 13px; font-weight: 500;
+        cursor: pointer;
+        transition: background 0.15s, border-color 0.15s, color 0.15s;
+      }
+      .toolbar-btn:hover:not(:disabled) {
+        background: var(--bg2);
+        border-color: var(--axial);
+        color: var(--axial);
+      }
+      .toolbar-btn.sagittal:hover:not(:disabled) { border-color: var(--sagittal); color: var(--sagittal); }
+      .toolbar-btn.coronal:hover:not(:disabled)  { border-color: var(--coronal);  color: var(--coronal);  }
+      .toolbar-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+      /* ── Status ── */
+      .status { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--muted); }
+      .dot {
+        width: 8px; height: 8px; border-radius: 50%;
+        background: var(--muted);
+        animation: pulse 2s infinite;
+      }
+      .dot.loading { background: #f59e0b; }
+      .dot.ready   { background: var(--axial); animation: none; }
+      .dot.error   { background: #ef4444; animation: none; }
+      @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+
+      /* ── Main content ── */
+      .main-content {
+        flex: 1; min-height: 0;
+        display: grid;
+        grid-template-columns: 1fr 260px;
+        gap: 4px; padding: 4px;
+      }
+      .main-content.full { grid-template-columns: 1fr; }
+
+      /* ── Viewport container ── */
+      .vp-container {
+        background: var(--bg2);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+      }
+      .vp-container:hover { border-color: var(--axial); }
+
+      .vp-header {
+        flex-shrink: 0; padding: 7px 12px;
+        background: var(--bg3); border-bottom: 1px solid var(--border);
+        font-size: 11px; font-weight: 600;
+        text-transform: uppercase; letter-spacing: 0.6px;
+      }
+      .vp-header.axial    { color: var(--axial); }
+      .vp-header.sagittal { color: var(--sagittal); }
+      .vp-header.coronal  { color: var(--coronal); }
+
+      /* Cornerstone renders into this element — must have an explicit size */
+      #vp-main {
+        flex: 1; min-height: 0;
+        background: #000;
+        position: relative;
+      }
+
+      /* ── Info pane ── */
+      .info-pane {
+        background: var(--bg2);
+        border: 1px solid var(--border);
+        border-radius: 8px; overflow: hidden;
+        display: flex; flex-direction: column;
+      }
+      .info-pane-header {
+        flex-shrink: 0; padding: 7px 12px;
+        background: var(--bg3); border-bottom: 1px solid var(--border);
+        font-size: 11px; font-weight: 600;
+        text-transform: uppercase; letter-spacing: 0.6px;
+      }
+      #dicom-info {
+        flex: 1; overflow-y: auto;
+        padding: 10px 12px;
+        font-size: 11px; line-height: 1.7;
+      }
+      .section-title {
+        color: var(--axial); font-weight: 600;
+        margin: 10px 0 4px; padding-bottom: 3px;
+        border-bottom: 1px solid var(--border);
+      }
+      .section-title:first-child { margin-top: 0; }
+      .info-row { display: flex; justify-content: space-between; padding: 2px 0; }
+      .lbl { color: var(--muted); }
+      .val { color: var(--text); text-align: right; }
+
+      /* ── Loading overlay ── */
+      #overlay {
+        position: fixed; inset: 0;
+        background: rgba(10, 14, 20, .95);
+        display: flex; flex-direction: column;
+        align-items: center; justify-content: center;
+        gap: 16px; z-index: 100;
+        transition: opacity .3s;
+      }
+      #overlay.hidden { opacity: 0; pointer-events: none; }
+      .spinner {
+        width: 44px; height: 44px; border-radius: 50%;
+        border: 3px solid var(--border); border-top-color: var(--axial);
+        animation: spin 1s linear infinite;
+      }
+      @keyframes spin { to { transform: rotate(360deg); } }
+      #progress { font-size: 12px; color: var(--axial); }
+      .error { color: #ef4444; font-size: 13px; padding: 16px; text-align: center; }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <header>
+        <div class="logo">
+          <div class="logo-badge">Rx</div>
+          <h1 id="view-title">DICOM Viewer</h1>
+        </div>
+
+        <div class="toolbar" id="main-toolbar">
+          <button class="toolbar-btn sagittal" id="open-sagittal-btn" disabled title="Load images first">
+            &#8599; Sagittal
+          </button>
+          <button class="toolbar-btn coronal" id="open-coronal-btn" disabled title="Load images first">
+            &#8599; Coronal
+          </button>
+        </div>
+
+        <div class="status">
+          <span id="status-text">Initialising…</span>
+          <div class="dot loading" id="status-dot"></div>
+        </div>
+      </header>
+
+      <div class="main-content" id="main-content">
+        <div class="vp-container">
+          <div class="vp-header axial" id="vp-header">Axial (Top-Down)</div>
+          <div id="vp-main"></div>
+        </div>
+
+        <div class="info-pane" id="info-pane-container">
+          <div class="info-pane-header">DICOM Information</div>
+          <div id="dicom-info"><span class="lbl">Loading…</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Loading overlay -->
+    <div id="overlay">
+      <div class="spinner"></div>
+      <div id="progress">Initialising…</div>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

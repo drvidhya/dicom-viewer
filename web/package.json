@@ -13,8 +13,10 @@
     "@cornerstonejs/core": "^2.0.0",
     "@cornerstonejs/dicom-image-loader": "^2.0.0",
     "@cornerstonejs/tools": "^2.0.0",
+    "@iwsdk/core": "^0.2.2",
     "dicom-parser": "^1.8.21",
-    "pako": "^2.1.0"
+    "pako": "^2.1.0",
+    "three": "^0.177.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

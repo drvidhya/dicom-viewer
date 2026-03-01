@@ -11,6 +11,8 @@ import {
 } from '@cornerstonejs/core';
 import { init as csToolsInit } from '@cornerstonejs/tools';
 import * as dicomImageLoader from '@cornerstonejs/dicom-image-loader';
+import { saveSession, loadSession } from './session';
+import { initXR, launchXR, exitXR, isXRInitialized, destroyXR } from './xr';
 
 const VOLUME_ID = 'cornerstoneStreamingImageVolume:dicomVolume';
 const RENDERING_ENGINE_ID = 'dicomRE';
@@ -158,6 +160,50 @@ function setupUI(): void {
   });
 }
 
+function setupXRButton(): void {
+  const btn = document.getElementById('enter-xr-btn') as HTMLButtonElement | null;
+  if (!btn) return;
+
+  btn.disabled = false;
+  btn.title = 'Enter WebXR immersive-vr session';
+
+  btn.addEventListener('click', async () => {
+    if (isXRInitialized()) {
+      exitXR();
+      destroyXR();
+      btn.textContent = 'WebXR';
+      btn.classList.remove('xr-active');
+    } else {
+      btn.disabled = true;
+      btn.textContent = 'Loading XR…';
+      try {
+        await initXR(VOLUME_ID);
+        const xrLaunchError = await new Promise<Error | null>((resolve) => {
+          const handler = (ev: PromiseRejectionEvent) => {
+            if (String(ev.reason).includes('session') || String(ev.reason).includes('XR') || String(ev.reason).includes('NotSupported')) {
+              ev.preventDefault();
+              window.removeEventListener('unhandledrejection', handler);
+              resolve(ev.reason instanceof Error ? ev.reason : new Error(String(ev.reason)));
+            }
+          };
+          window.addEventListener('unhandledrejection', handler);
+          launchXR();
+          setTimeout(() => { window.removeEventListener('unhandledrejection', handler); resolve(null); }, 2000);
+        });
+        if (xrLaunchError) throw xrLaunchError;
+        btn.textContent = 'Exit WebXR';
+        btn.classList.add('xr-active');
+      } catch (err) {
+        console.error('[XR] Failed to initialize:', err);
+        btn.textContent = 'WebXR';
+        alert('Failed to enter WebXR: ' + (err instanceof Error ? err.message : String(err)));
+      } finally {
+        btn.disabled = false;
+      }
+    }
+  });
+}
+
 async function run() {
   setupUI();
   updateStatus('Initialising…', 'loading');
@@ -165,14 +211,30 @@ async function run() {
 
   await initCornerstone();
 
-  updateProgress('Loading manifest…');
-  const rawIds = await fetchImageIds();
+  let imageIds: string[];
+  let voiRange: { lower: number; upper: number };
 
-  updateProgress('Prefetching images…');
-  const imageIds = await prefetchAndSort(rawIds);
+  const session = loadSession();
 
-  const midId = imageIds[Math.floor(imageIds.length / 2)];
-  const { lower, upper } = getVoiFromMetadata(midId);
+  if (isChildWindow && session) {
+    // Child window: reuse sorted imageIds saved by the main window — no re-fetch, no re-sort.
+    // The DICOM files are already in the browser's HTTP cache from the main window's load.
+    imageIds = session.imageIds;
+    voiRange = session.voiRange;
+    updateProgress('Using shared session…');
+  } else {
+    // Main window (or child opened before main finished): load, sort, and save.
+    updateProgress('Loading manifest…');
+    const rawIds = await fetchImageIds();
+
+    updateProgress('Prefetching images…');
+    imageIds = await prefetchAndSort(rawIds);
+
+    const midId = imageIds[Math.floor(imageIds.length / 2)];
+    voiRange = getVoiFromMetadata(midId);
+
+    saveSession({ imageIds, voiRange });
+  }
 
   updateProgress('Setting up viewport…');
   const renderingEngine = new RenderingEngine(RENDERING_ENGINE_ID);
@@ -196,13 +258,13 @@ async function run() {
   updateProgress('Assigning volume to viewport…');
   await setVolumesForViewports(
     renderingEngine,
-    [{ volumeId: VOLUME_ID, callback: makeCTCallback(lower, upper) }],
+    [{ volumeId: VOLUME_ID, callback: makeCTCallback(voiRange.lower, voiRange.upper) }],
     [VIEWPORT_ID],
   );
 
   const vp = renderingEngine.getViewport(VIEWPORT_ID) as Types.IVolumeViewport;
   vp.setProperties({
-    voiRange: { lower, upper },
+    voiRange,
     VOILUTFunction: Enums.VOILUTFunctionType.LINEAR,
     colormap: { name: 'Grayscale' },
   });
@@ -229,6 +291,7 @@ async function run() {
     if (sagBtn) { sagBtn.disabled = false; sagBtn.title = 'Open Sagittal view in new window'; }
     if (corBtn) { corBtn.disabled = false; corBtn.title = 'Open Coronal view in new window'; }
     populateInfo(imageIds[0], imageIds.length);
+    setupXRButton();
   }
 
   hideOverlay();

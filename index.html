@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DICOM Viewer</title>
+    <style>
+      :root {
+        --bg:       #0a0e14;
+        --bg2:      #131920;
+        --bg3:      #1a2028;
+        --border:   #2a323d;
+        --text:     #e6e6e6;
+        --muted:    #8a919b;
+        --axial:    #00d4aa;
+        --sagittal: #ff6b9d;
+        --coronal:  #7c5cff;
+        --xr:       #f59e0b;
+      }
+
+      *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+      html, body {
+        width: 100%; height: 100%; overflow: hidden;
+        font-family: system-ui, 'Segoe UI', sans-serif;
+        background: var(--bg);
+        color: var(--text);
+      }
+
+      #app { display: flex; flex-direction: column; height: 100%; }
+
+      /* ── Header ── */
+      header {
+        flex-shrink: 0;
+        display: flex; align-items: center; justify-content: space-between;
+        padding: 10px 20px;
+        background: var(--bg2);
+        border-bottom: 1px solid var(--border);
+      }
+
+      .logo { display: flex; align-items: center; gap: 10px; }
+      .logo-badge {
+        width: 34px; height: 34px; border-radius: 8px;
+        background: linear-gradient(135deg, var(--axial), var(--coronal));
+        display: flex; align-items: center; justify-content: center;
+        font-weight: 700; font-size: 12px; color: #000;
+      }
+      .logo h1 { font-size: 16px; font-weight: 500; letter-spacing: -0.3px; }
+      .vr-link {
+        font-size: 12px; color: var(--xr);
+        text-decoration: none; opacity: 0.8;
+        transition: opacity 0.15s;
+        display: none;
+      }
+      .vr-link:hover { opacity: 1; text-decoration: underline; }
+
+      /* ── Status ── */
+      .status { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--muted); }
+      .dot {
+        width: 8px; height: 8px; border-radius: 50%;
+        background: var(--muted);
+        animation: pulse 2s infinite;
+      }
+      .dot.loading { background: #f59e0b; }
+      .dot.ready   { background: var(--axial); animation: none; }
+      .dot.error   { background: #ef4444; animation: none; }
+      @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+
+      /* ── Dashboard layout: info top, buttons bottom ── */
+      #main-content {
+        flex: 1; min-height: 0;
+        display: flex; flex-direction: column;
+        gap: 4px; padding: 4px;
+      }
+      .launcher-btns {
+        flex-shrink: 0;
+        display: flex; flex-direction: row; gap: 8px;
+        height: 64px; margin-bottom: 4px;
+      }
+      .view-btn {
+        flex: 1; display: flex; align-items: center; justify-content: center; gap: 10px;
+        background: var(--bg3);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        color: var(--text);
+        font-size: 14px; font-weight: 600;
+        cursor: pointer;
+        transition: border-color 0.15s, background 0.15s;
+      }
+      .view-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+      .view-dot {
+        width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0;
+        background: var(--muted);
+        transition: background 0.2s, box-shadow 0.2s;
+      }
+      .view-name { font-size: 14px; font-weight: 600; }
+      .view-state { font-size: 11px; color: var(--muted); }
+
+
+      /* ── Viewer window layout ── */
+      .main-content {
+        flex: 1; min-height: 0;
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 4px; padding: 4px;
+      }
+      .main-content.full { padding: 0; gap: 0; }
+
+      /* Per-view colours */
+      #btn-axial:not(:disabled):hover:not(.open)    { border-color: var(--axial); }
+      #btn-sagittal:not(:disabled):hover:not(.open) { border-color: var(--sagittal); }
+      #btn-coronal:not(:disabled):hover:not(.open)  { border-color: var(--coronal); }
+
+      #btn-axial.open    { border-color: var(--axial);    background: rgba(0,212,170,0.07); }
+      #btn-sagittal.open { border-color: var(--sagittal); background: rgba(255,107,157,0.07); }
+      #btn-coronal.open  { border-color: var(--coronal);  background: rgba(124,92,255,0.07); }
+
+      #btn-axial.open    .view-dot { background: var(--axial);    box-shadow: 0 0 6px var(--axial); }
+      #btn-sagittal.open .view-dot { background: var(--sagittal); box-shadow: 0 0 6px var(--sagittal); }
+      #btn-coronal.open  .view-dot { background: var(--coronal);  box-shadow: 0 0 6px var(--coronal); }
+
+      #btn-axial.open    .view-state { color: var(--axial); }
+      #btn-sagittal.open .view-state { color: var(--sagittal); }
+      #btn-coronal.open  .view-state { color: var(--coronal); }
+
+
+      /* ── Info pane ── */
+      .info-pane {
+        flex: 1; min-height: 0;
+        background: var(--bg2);
+        border: 1px solid var(--border);
+        border-radius: 8px; overflow: hidden;
+        display: flex; flex-direction: column;
+      }
+      .info-pane-header {
+        flex-shrink: 0; padding: 7px 12px;
+        background: var(--bg3); border-bottom: 1px solid var(--border);
+        font-size: 11px; font-weight: 600;
+        text-transform: uppercase; letter-spacing: 0.6px;
+      }
+      #dicom-info {
+        flex: 1; overflow-y: auto;
+        padding: 10px 12px;
+        font-size: 11px; line-height: 1.7;
+      }
+      .section-title {
+        color: var(--axial); font-weight: 600;
+        margin: 10px 0 4px; padding-bottom: 3px;
+        border-bottom: 1px solid var(--border);
+      }
+      .section-title:first-child { margin-top: 0; }
+      .info-row { display: flex; justify-content: space-between; padding: 2px 0; }
+      .lbl { color: var(--muted); }
+      .val { color: var(--text); text-align: right; }
+
+      /* ── Viewer windows: full-bleed viewport ── */
+      body.child-view #vp-header { display: none; }
+      body.child-view .vp-container { border: none; border-radius: 0; }
+
+      /* Viewer window viewport elements (not present in dashboard) */
+      .vp-container {
+        background: var(--bg2);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        overflow: hidden;
+        display: flex; flex-direction: column;
+      }
+      .vp-header {
+        flex-shrink: 0; padding: 7px 12px;
+        background: var(--bg3); border-bottom: 1px solid var(--border);
+        font-size: 11px; font-weight: 600;
+        text-transform: uppercase; letter-spacing: 0.6px;
+      }
+      .vp-header.axial    { color: var(--axial); }
+      .vp-header.sagittal { color: var(--sagittal); }
+      .vp-header.coronal  { color: var(--coronal); }
+      #vp-main { flex: 1; min-height: 0; background: #000; position: relative; }
+
+      /* ── Load bar (viewer windows) ── */
+      #load-bar {
+        position: fixed; top: 0; left: 0; right: 0;
+        height: 2px; z-index: 200;
+        display: none; overflow: hidden;
+        pointer-events: none;
+      }
+      #load-bar.loading {
+        display: block;
+        background: rgba(0, 212, 170, 0.15);
+      }
+      #load-bar.loading::after {
+        content: '';
+        position: absolute; top: 0; height: 100%;
+        width: 35%; left: -35%;
+        background: var(--axial);
+        animation: lb-scan 1.4s ease-in-out infinite;
+      }
+      @keyframes lb-scan { to { left: 135%; } }
+      #load-bar.done {
+        display: block;
+        background: var(--axial);
+        opacity: 0;
+        transition: opacity 0.5s;
+      }
+
+      /* ── Loading overlay ── */
+      #overlay {
+        position: fixed; inset: 0;
+        background: rgba(10, 14, 20, .95);
+        display: flex; flex-direction: column;
+        align-items: center; justify-content: center;
+        gap: 16px; z-index: 100;
+        transition: opacity .3s;
+      }
+      #overlay.hidden { opacity: 0; pointer-events: none; }
+      .spinner {
+        width: 44px; height: 44px; border-radius: 50%;
+        border: 3px solid var(--border); border-top-color: var(--axial);
+        animation: spin 1s linear infinite;
+      }
+      @keyframes spin { to { transform: rotate(360deg); } }
+      #progress { font-size: 12px; color: var(--axial); }
+      .error { color: #ef4444; font-size: 13px; padding: 16px; text-align: center; }
+    </style>
+  </head>
+  <body>
+    <div id="load-bar"></div>
+    <div id="app">
+      <header>
+        <div class="logo">
+          <div class="logo-badge">Rx</div>
+          <h1 id="view-title">DICOM Viewer</h1>
+          <a id="vr-mode-link" class="vr-link" href="#">VR Mode</a>
+        </div>
+
+        <div class="status">
+          <span id="status-text">Initialising…</span>
+          <div class="dot loading" id="status-dot"></div>
+        </div>
+      </header>
+
+      <div id="main-content">
+        <div class="launcher-btns">
+          <button class="view-btn" id="btn-axial" disabled>
+            <div class="view-dot"></div>
+            <span class="view-name">Axial</span>
+            <span class="view-state">—</span>
+          </button>
+          <button class="view-btn" id="btn-sagittal" disabled>
+            <div class="view-dot"></div>
+            <span class="view-name">Sagittal</span>
+            <span class="view-state">—</span>
+          </button>
+          <button class="view-btn" id="btn-coronal" disabled>
+            <div class="view-dot"></div>
+            <span class="view-name">Coronal</span>
+            <span class="view-state">—</span>
+          </button>
+        </div>
+
+        <div class="info-pane" id="info-pane-container">
+          <div class="info-pane-header">DICOM Information</div>
+          <div id="dicom-info"><span class="lbl">Loading…</span></div>
+        </div>
+      </div>
+
+      <div class="main-content" id="viewer-content" style="display:none">
+        <div class="vp-container">
+          <div class="vp-header axial" id="vp-header">Axial</div>
+          <div id="vp-main"></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="overlay">
+      <div class="spinner"></div>
+      <div id="progress">Initialising…</div>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

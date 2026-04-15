@@ -18,6 +18,12 @@
     "allowSyntheticDefaultImports": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["src/**/*.ts", "src/**/*.d.ts", "vite.config.ts"]
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.d.ts",
+    "vite.config.ts",
+    "vite.config.https.ts",
+    "vite.shared.ts"
+  ]
 }
 

@@ -1,6 +1,6 @@
-public/data*
+dicom/others
+
 node_modules
 dist
 client-logs.jsonl
 .claude
-/data

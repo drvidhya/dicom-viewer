@@ -120,9 +120,29 @@ type ViewPanel = {
 };
 
 // Local offsets from panel center to each handle (at scale 1.0).
-// World position = panelPos + offset * currentScale.
+// World position = panelPos + rotateLocal(offset * scale).
 const DRAG_HANDLE_OFFSET   = new THREE.Vector3(PANEL_W / 2 - 0.02,  PANEL_H / 2 + HEADER_H + 0.01, 0.005);
 const RESIZE_HANDLE_OFFSET = new THREE.Vector3(PANEL_W / 2 - 0.02, -PANEL_H / 2 + 0.02,           0.005);
+const RESIZE_HANDLE_BASE_LEN = RESIZE_HANDLE_OFFSET.length();
+
+const _tmpResizeDir = new THREE.Vector3();
+const _tmpDragCorner = new THREE.Vector3();
+
+function resizeHandleWorldDir(panelObj: THREE.Object3D, target: THREE.Vector3): THREE.Vector3 {
+  return target
+    .copy(RESIZE_HANDLE_OFFSET)
+    .normalize()
+    .applyQuaternion(panelObj.quaternion);
+}
+
+function scaledLocalOffsetWorld(
+  panelObj: THREE.Object3D,
+  localOffset: THREE.Vector3,
+  scale: number,
+  target: THREE.Vector3,
+): THREE.Vector3 {
+  return target.copy(localOffset).multiplyScalar(scale).applyQuaternion(panelObj.quaternion);
+}
 
 const gPanels = new Map<string, ViewPanel>();
 
@@ -254,18 +274,18 @@ class DicomSystem extends createSystem({}) {
       }
       panel.lastDragPos.copy(dhPos);
 
-      // ── Resize: scale panel to match handle distance ──
+      // ── Resize: uniform scale; snap resize handle to bottom-right diagonal (same aspect) ──
       const resizeDelta = rhPos.clone().sub(panel.lastResizePos);
       if (resizeDelta.lengthSq() > 1e-10) {
-        const dist    = rhPos.distanceTo(panelObj.position);
-        const base    = RESIZE_HANDLE_OFFSET.length();
-        const scale   = THREE.MathUtils.clamp(dist / base, 0.3, 3.0);
+        const center  = panelObj.position;
+        const worldDir = resizeHandleWorldDir(panelObj, _tmpResizeDir);
+        const tAlong  = rhPos.clone().sub(center).dot(worldDir);
+        const scale   = THREE.MathUtils.clamp(tAlong / RESIZE_HANDLE_BASE_LEN, 0.3, 3.0);
         panelObj.scale.setScalar(scale);
-        // Re-anchor drag handle to the scaled panel corner
-        const newDragPos = panelObj.position.clone()
-          .add(DRAG_HANDLE_OFFSET.clone().multiplyScalar(scale));
-        dhPos.copy(newDragPos);
-        panel.lastDragPos.copy(newDragPos);
+        rhPos.copy(center).addScaledVector(worldDir, scale * RESIZE_HANDLE_BASE_LEN);
+        const dragCorner = scaledLocalOffsetWorld(panelObj, DRAG_HANDLE_OFFSET, scale, _tmpDragCorner);
+        dhPos.copy(center).add(dragCorner);
+        panel.lastDragPos.copy(dhPos);
       }
       panel.lastResizePos.copy(rhPos);
     }

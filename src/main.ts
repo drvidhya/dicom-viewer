@@ -5,6 +5,7 @@ import {
   metaData,
   setVolumesForViewports,
   eventTarget,
+  utilities,
   type Types,
 } from '@cornerstonejs/core';
 import { saveSession, loadSession } from './session';
@@ -31,31 +32,72 @@ const ORIENTATION_MAP: Record<string, Enums.OrientationAxis> = {
 const viewChannel = new BroadcastChannel('dicom-viewer-views');
 const openViews = new Set<string>();
 
-function updateViewButton(view: string) {
-  const btn = document.getElementById(`btn-${view}`);
+type ViewMsg =
+  | { type: 'opened'; view: string }
+  | { type: 'closed'; view: string }
+  | { type: 'slice'; view: string; imageIndex: number }
+  | { type: 'sliceSync'; view: string; current: number; total: number };
+
+function updateViewCard(view: string) {
+  const card = document.getElementById(`card-${view}`);
   const open = openViews.has(view);
-  btn?.classList.toggle('open', open);
-  const stateEl = btn?.querySelector('.view-state');
-  if (stateEl) stateEl.textContent = open ? 'Open' : 'Closed';
+  card?.classList.toggle('open', open);
+  const stateEl = card?.querySelector('.view-state');
+  if (stateEl) stateEl.textContent = open ? 'Window open' : 'Closed';
+  const slider = document.getElementById(`slider-${view}`) as HTMLInputElement | null;
+  const readout = document.getElementById(`slice-readout-${view}`);
+  if (slider) slider.disabled = !open;
+  if (!open && readout) readout.textContent = '— / —';
 }
 
-function setupViewButtons() {
+function setupViewCards(nFrames: number) {
   const views = ['axial', 'sagittal', 'coronal'] as const;
+  const maxGuess = String(Math.max(1, nFrames));
+
   for (const view of views) {
-    const btn = document.getElementById(`btn-${view}`) as HTMLButtonElement;
-    btn.disabled = false;
-    btn.querySelector('.view-state')!.textContent = 'Closed';
-    btn.addEventListener('click', () => window.open(
-      `${window.location.pathname}?view=${view}`,
-      `dicom-${view}`,
-      'width=1000,height=800,menubar=no,toolbar=no',
-    ));
+    const openBtn = document.getElementById(`btn-${view}`) as HTMLButtonElement;
+    const slider = document.getElementById(`slider-${view}`) as HTMLInputElement;
+    openBtn.disabled = false;
+    slider.max = maxGuess;
+    slider.min = '1';
+    slider.value = '1';
+
+    openBtn.addEventListener('click', () => {
+      window.open(
+        `${window.location.pathname}?view=${view}`,
+        `dicom-${view}`,
+        'width=1000,height=800,menubar=no,toolbar=no',
+      );
+    });
+
+    slider.addEventListener('input', () => {
+      if (!openViews.has(view)) return;
+      const imageIndex = Number(slider.value) - 1;
+      const readout = document.getElementById(`slice-readout-${view}`);
+      if (readout) readout.textContent = `${slider.value} / ${slider.max}`;
+      viewChannel.postMessage({ type: 'slice', view, imageIndex } satisfies ViewMsg);
+    });
   }
+
   viewChannel.addEventListener('message', (e: MessageEvent) => {
-    const { type, view } = e.data as { type: string; view: string };
-    if (type === 'opened') openViews.add(view);
-    else if (type === 'closed') openViews.delete(view);
-    updateViewButton(view);
+    const d = e.data as ViewMsg;
+    if (!d || typeof d !== 'object' || !('type' in d)) return;
+    if (d.type === 'opened') {
+      openViews.add(d.view);
+      updateViewCard(d.view);
+    } else if (d.type === 'closed') {
+      openViews.delete(d.view);
+      updateViewCard(d.view);
+    } else if (d.type === 'sliceSync' && d.view) {
+      const slider = document.getElementById(`slider-${d.view}`) as HTMLInputElement | null;
+      const readout = document.getElementById(`slice-readout-${d.view}`);
+      if (!slider || !readout) return;
+      const total = Math.max(1, d.total);
+      const current = Math.min(Math.max(1, d.current), total);
+      slider.max = String(total);
+      slider.value = String(current);
+      readout.textContent = `${current} / ${total}`;
+    }
   });
 }
 
@@ -76,7 +118,7 @@ async function runDashboard() {
   }
 
   populateInfo(imageIds[0], imageIds.length);
-  setupViewButtons();
+  setupViewCards(imageIds.length);
   hideOverlay();
   updateStatus('Ready', 'ready');
 }
@@ -169,21 +211,57 @@ async function runViewer(view: 'axial' | 'sagittal' | 'coronal') {
   });
   renderingEngine.renderViewports([VIEWPORT_ID]);
 
+  const vpEl = document.getElementById(VIEWPORT_ID) as HTMLDivElement;
+
+  function postSliceSync() {
+    try {
+      const info = utilities.getVolumeViewportScrollInfo(vp, VOLUME_ID);
+      viewChannel.postMessage({
+        type: 'sliceSync',
+        view,
+        current: info.currentStepIndex + 1,
+        total: info.numScrollSteps,
+      } satisfies ViewMsg);
+    } catch {
+      /* viewport not ready */
+    }
+  }
+
+  const onSliceMsg = async (e: MessageEvent) => {
+    const d = e.data as ViewMsg;
+    if (d?.type !== 'slice' || d.view !== view) return;
+    if (typeof d.imageIndex !== 'number') return;
+    try {
+      await utilities.jumpToSlice(vpEl, { imageIndex: d.imageIndex, volumeId: VOLUME_ID });
+      renderingEngine.renderViewports([VIEWPORT_ID]);
+      postSliceSync();
+    } catch (err) {
+      console.warn('[viewer] jumpToSlice', err);
+    }
+  };
+  viewChannel.addEventListener('message', onSliceMsg);
+
   document.getElementById(VIEWPORT_ID)!.addEventListener('wheel', (e) => {
     e.preventDefault();
-    const vp = renderingEngine.getViewport(VIEWPORT_ID) as Types.IVolumeViewport;
-    const cam = vp.getCamera();
+    const vport = renderingEngine.getViewport(VIEWPORT_ID) as Types.IVolumeViewport;
+    const cam = vport.getCamera();
     const delta = e.deltaY > 0 ? 1 : -1;
     const fp = cam.focalPoint!;
     const n = cam.viewPlaneNormal!;
-    vp.setCamera({
+    vport.setCamera({
       focalPoint: [fp[0] + n[0] * delta, fp[1] + n[1] * delta, fp[2] + n[2] * delta],
     });
-    vp.render();
+    vport.render();
+    postSliceSync();
   }, { passive: false });
 
-  viewChannel.postMessage({ type: 'opened', view });
-  window.addEventListener('beforeunload', () => viewChannel.postMessage({ type: 'closed', view }));
+  viewChannel.postMessage({ type: 'opened', view } satisfies ViewMsg);
+  postSliceSync();
+
+  window.addEventListener('beforeunload', () => {
+    viewChannel.removeEventListener('message', onSliceMsg);
+    viewChannel.postMessage({ type: 'closed', view } satisfies ViewMsg);
+  });
 
   hideOverlay();
   updateStatus('Ready', 'ready');
@@ -197,35 +275,25 @@ async function runViewer(view: 'axial' | 'sagittal' | 'coronal') {
 });
 
 function populateInfo(imageId: string, nSlices: number) {
-  const pm  = metaData.get('patientModule',      imageId) ?? {};
-  const sm  = metaData.get('generalStudyModule',  imageId) ?? {};
-  const se  = metaData.get('generalSeriesModule', imageId) ?? {};
-  const ip  = metaData.get('imagePlaneModule',    imageId) ?? {};
-  const px  = metaData.get('imagePixelModule',    imageId) ?? {};
-  const voi = metaData.get('voiLutModule',        imageId) ?? {};
+  const pm = metaData.get('patientModule', imageId) ?? {};
+  const sm = metaData.get('generalStudyModule', imageId) ?? {};
+  const se = metaData.get('generalSeriesModule', imageId) ?? {};
+  const px = metaData.get('imagePixelModule', imageId) ?? {};
 
-  const row = (label: string, value: unknown) =>
-    `<div class="info-row"><span class="lbl">${label}</span><span class="val">${value ?? '—'}</span></div>`;
+  const esc = (v: unknown) =>
+    String(v ?? '—').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
-  const wc = Array.isArray(voi.windowCenter) ? voi.windowCenter[0] : voi.windowCenter;
-  const ww = Array.isArray(voi.windowWidth)  ? voi.windowWidth[0]  : voi.windowWidth;
-  const ps = ip.pixelSpacing;
+  const matrix = px.columns && px.rows ? `${px.columns} × ${px.rows}` : '—';
+  const row = (label: string, value: string) =>
+    `<div class="meta-row"><span class="meta-lbl">${label}</span><span class="meta-val">${esc(value)}</span></div>`;
 
-  document.getElementById('dicom-info')!.innerHTML = `
-    <div class="section-title">Patient</div>
-    ${row('Name', pm.patientName)}
-    ${row('ID', pm.patientId)}
-    <div class="section-title">Study</div>
-    ${row('Description', sm.studyDescription)}
-    ${row('Date', sm.studyDate)}
-    <div class="section-title">Series</div>
-    ${row('Modality', se.modality)}
-    ${row('Description', se.seriesDescription)}
-    <div class="section-title">Image</div>
-    ${row('Matrix', px.columns && px.rows ? `${px.columns} × ${px.rows}` : '—')}
-    ${row('Slices', nSlices)}
-    ${row('Pixel spacing', ps ? `${Number(ps[0]).toFixed(3)} × ${Number(ps[1]).toFixed(3)} mm` : '—')}
-    ${row('Slice thickness', ip.sliceThickness ? `${ip.sliceThickness} mm` : '—')}
-    ${row('Window C / W', wc != null ? `${Number(wc).toFixed(0)} / ${Number(ww).toFixed(0)}` : '—')}
-  `;
+  // Same compact fields as the XR dashboard canvas (`drawDashboard` in xr-main.ts).
+  document.getElementById('dicom-info')!.innerHTML = [
+    row('Patient', String(pm.patientName ?? '—')),
+    row('Study', String(sm.studyDescription ?? '—')),
+    row('Series', String(se.seriesDescription ?? '—')),
+    row('Modality', String(se.modality ?? '—')),
+    row('Slices', String(nSlices)),
+    row('Matrix', matrix),
+  ].join('');
 }

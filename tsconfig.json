@@ -21,9 +21,7 @@
   "include": [
     "src/**/*.ts",
     "src/**/*.d.ts",
-    "vite.config.ts",
-    "vite.config.https.ts",
-    "vite.shared.ts"
+    "vite/**/*.ts"
   ]
 }
 

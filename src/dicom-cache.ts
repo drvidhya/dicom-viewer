@@ -4,7 +4,7 @@ import { prefetchAll } from './dicom';
  * Must match CACHE_NAME in `static/service-worker.js` (copied to dist root on build).
  * Bump the version suffix in both places when the caching strategy changes.
  */
-export const DICOM_SW_CACHE_NAME = 'dicom-viewer-data-v1';
+export const DICOM_SW_CACHE_NAME = 'dicom-viewer-data-v2';
 export const DICOM_HTTP_CACHE_PREFIX = 'dicom-viewer-data-';
 
 function serviceWorkerScriptUrl(): string {

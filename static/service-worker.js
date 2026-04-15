@@ -1,10 +1,10 @@
 /**
- * Cache-first handler for /dicom/data/* (manifest + DICOM) to avoid repeat downloads
+ * Cache-first handler for DICOM data GETs (path contains /dicom/data/) — same-origin, any prefix.
  * across main window and viewer popups.
  *
  * Keep CACHE_NAME in sync with DICOM_SW_CACHE_NAME in src/dicom-cache.ts
  */
-const CACHE_VERSION = 'v1';
+const CACHE_VERSION = 'v2';
 const CACHE_NAME = `dicom-viewer-data-${CACHE_VERSION}`;
 
 self.addEventListener('install', () => {
@@ -30,7 +30,10 @@ self.addEventListener('activate', (event) => {
  * @param {URL} url
  */
 function shouldCache(url) {
-  return url.pathname.startsWith('/dicom/data/');
+  return (
+    url.pathname.includes('/dicom/data/') &&
+    !url.pathname.endsWith('/manifest.json')
+  );
 }
 
 self.addEventListener('fetch', (event) => {

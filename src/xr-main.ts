@@ -56,7 +56,7 @@ import {
   VIEW_LABELS,
   type PlaneId,
 } from './viewer-planes';
-import { loadSession, saveSession } from './session';
+import { clearSession, loadSession, saveSession } from './session';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -1154,7 +1154,9 @@ async function main(): Promise<void> {
     let imageIds: string[];
 
     const session = loadSession();
+    let usedSession = false;
     if (session) {
+      usedSession = true;
       imageIds   = session.imageIds;
       gVoiRange  = session.voiRange;
       setProgress('Using cached session…');
@@ -1167,9 +1169,16 @@ async function main(): Promise<void> {
 
     const nXr = imageIds.length;
     imageIds = imageIdsReadyForVolume(imageIds);
+    if (imageIds.length === 0 && usedSession) {
+      clearSession();
+      const result = await loadFromManifest(setProgress);
+      imageIds  = result.imageIds;
+      gVoiRange = result.voiRange;
+      imageIds = imageIdsReadyForVolume(imageIds);
+    }
     if (imageIds.length === 0) {
       throw new Error(
-        'No usable DICOM slices (missing metadata — often load/parse failure or unsupported transfer syntax).',
+        'No usable DICOM slices (missing metadata, bad session, or unsupported transfer syntax). Clear site data for this origin.',
       );
     }
     if (imageIds.length !== nXr) {

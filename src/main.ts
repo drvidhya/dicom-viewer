@@ -7,7 +7,7 @@ import {
   utilities,
   type Types,
 } from '@cornerstonejs/core';
-import { saveSession, loadSession } from './session';
+import { clearSession, loadSession, saveSession } from './session';
 import { initCornerstone } from './cornerstone';
 import {
   ctVoiCallback,
@@ -198,7 +198,9 @@ async function runDashboard() {
   let imageIds: string[];
   let voiRange: { lower: number; upper: number };
   const session = loadSession();
+  let usedSession = false;
   if (session) {
+    usedSession = true;
     imageIds = session.imageIds;
     voiRange = session.voiRange;
     updateProgress('Prefetching series (warms cache for viewer windows)…');
@@ -211,9 +213,16 @@ async function runDashboard() {
 
   const nDash = imageIds.length;
   imageIds = imageIdsReadyForVolume(imageIds);
+  if (imageIds.length === 0 && usedSession) {
+    clearSession();
+    const result = await loadFromManifest(updateProgress);
+    imageIds = result.imageIds;
+    voiRange = result.voiRange;
+    imageIds = imageIdsReadyForVolume(imageIds);
+  }
   if (imageIds.length === 0) {
     showError(
-      'No usable DICOM slices (missing metadata — often load/parse failure or unsupported transfer syntax).',
+      'No usable DICOM slices (missing metadata, bad session, or unsupported transfer syntax). Try clearing site data for this origin or open in a private window.',
     );
     return;
   }
@@ -258,7 +267,9 @@ async function runViewer(view: PlaneId) {
   let voiRange: { lower: number; upper: number };
 
   const session = loadSession();
+  let usedSession = false;
   if (session) {
+    usedSession = true;
     imageIds = session.imageIds;
     voiRange = session.voiRange;
     await prefetchAll(imageIds, (loaded, total) =>
@@ -269,9 +280,14 @@ async function runViewer(view: PlaneId) {
 
   const nBefore = imageIds.length;
   imageIds = imageIdsReadyForVolume(imageIds);
+  if (imageIds.length === 0 && usedSession) {
+    clearSession();
+    ({ imageIds, voiRange } = await loadFromManifest(updateProgress));
+    imageIds = imageIdsReadyForVolume(imageIds);
+  }
   if (imageIds.length === 0) {
     throw new Error(
-      'No usable DICOM slices (missing metadata — often load/parse failure or unsupported transfer syntax).',
+      'No usable DICOM slices (missing metadata, bad session, or unsupported transfer syntax). Clear site data for this origin or use a private window.',
     );
   }
   if (imageIds.length !== nBefore) {

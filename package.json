@@ -4,14 +4,14 @@
   "description": "DICOM viewer with Cornerstone3D — Axial, Sagittal, and Coronal views",
   "type": "module",
   "scripts": {
-    "vite": "vite",
-    "dev": "concurrently -k -n http,https -c cyan,magenta \"vite --config vite.config.ts\" \"vite --config vite.config.https.ts\"",
-    "dev:http": "vite --config vite.config.ts",
-    "dev:https": "vite --config vite.config.https.ts",
+    "vite": "vite --config vite/vite.config.ts",
+    "dev": "concurrently -k -n http,https -c cyan,magenta \"vite --config vite/vite.config.ts\" \"vite --config vite/vite.config.https.ts\"",
+    "dev:http": "vite --config vite/vite.config.ts",
+    "dev:https": "vite --config vite/vite.config.https.ts",
     "gen:manifest": "node src/scripts/generate-dicom-manifest.mjs",
-    "build": "tsc && vite build",
-    "preview": "vite preview",
-    "preview:host": "vite preview --host 0.0.0.0 --port 4173"
+    "build": "rimraf dist && tsc && vite build --config vite/vite.config.ts",
+    "preview": "vite preview --config vite/vite.config.ts",
+    "preview:host": "vite preview --config vite/vite.config.ts --host 0.0.0.0 --port 4173"
   },
   "dependencies": {
     "@cornerstonejs/core": "^2.0.0",
@@ -30,6 +30,7 @@
     "@types/three": "^0.183.1",
     "@vitejs/plugin-basic-ssl": "^2.3.0",
     "concurrently": "^9.1.2",
+    "rimraf": "^6.0.1",
     "typescript": "^5.7.2",
     "vite": "^6.0.6"
   }

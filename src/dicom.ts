@@ -1,7 +1,60 @@
 import { imageLoader, metaData } from '@cornerstonejs/core';
 
-/** URL path for manifest + slices (Vite dev middleware + `dist/dicom/data` when built). */
-export const DICOM_DATA_URL_PREFIX = '/dicom/data';
+/**
+ * Directory URL for manifest + slices.
+ *
+ * Default: **`dicom/data/`** resolved relative to **`location.href`**, so the dataset sits beside
+ * `index.html` / `xr.html` under any path prefix. On a dev server opened at `/`, that resolves to the
+ * same URL Vite serves via middleware at **`/dicom/data/`**. The build does not copy DICOM.
+ *
+ * **Override:** `VITE_DICOM_DATA_BASE` — path relative to the current document (a leading `/` is
+ * stripped so the base is never forced to the site root), or a full `http(s)` URL for another host.
+ */
+export function getDicomDataDirUrl(): URL {
+  const envRaw = import.meta.env.VITE_DICOM_DATA_BASE?.trim();
+  if (envRaw) {
+    if (envRaw.startsWith('http://') || envRaw.startsWith('https://')) {
+      return new URL(envRaw.endsWith('/') ? envRaw : `${envRaw}/`);
+    }
+    const path = envRaw.replace(/^\/+/, '');
+    const withSlash = path.endsWith('/') ? path : `${path}/`;
+    return new URL(withSlash, window.location.href);
+  }
+
+  return new URL('dicom/data/', window.location.href);
+}
+
+const DICOM_DATA_PATH_MARKER = 'dicom/data/';
+
+/**
+ * Rewrites stored `wadouri:` ids to use the current {@link getDicomDataDirUrl} base
+ * (fixes localhost vs 127.0.0.1, GitHub Pages vs dev, or older path shapes).
+ */
+export function normalizeWadouriImageIds(imageIds: string[]): string[] {
+  const dir = getDicomDataDirUrl();
+  return imageIds.map((id) => {
+    if (!id.startsWith('wadouri:')) return id;
+    const rest = id.slice('wadouri:'.length).trim();
+    let pathname: string;
+    try {
+      pathname = new URL(rest).pathname;
+    } catch {
+      try {
+        pathname = new URL(rest, 'http://placeholder.local/').pathname;
+      } catch {
+        return id;
+      }
+    }
+    const trimmed = pathname.replace(/^\/+/, '');
+    const idx = trimmed.indexOf(DICOM_DATA_PATH_MARKER);
+    const rel =
+      idx >= 0
+        ? trimmed.slice(idx + DICOM_DATA_PATH_MARKER.length)
+        : trimmed.split('/').filter(Boolean).pop() ?? '';
+    if (!rel) return id;
+    return `wadouri:${new URL(rel, dir).href}`;
+  });
+}
 
 /** Slices Cornerstone can build a volume from (wadouri cache + required tags present). */
 function imageIdReadyForVolume(id: string): boolean {
@@ -33,12 +86,47 @@ export function imageIdsReadyForVolume(imageIds: string[]): string[] {
   return imageIds.filter(imageIdReadyForVolume);
 }
 
-export async function fetchImageIds(): Promise<string[]> {
-  const res = await fetch(`${DICOM_DATA_URL_PREFIX}/manifest.json`);
-  if (!res.ok) throw new Error('Failed to fetch manifest.json');
-  const json = await res.json();
+function parseManifestPayload(text: string): string[] {
+  const trimmed = text.trimStart();
+  if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) {
+    throw new Error(
+      `Manifest response is not JSON (starts with ${JSON.stringify(trimmed.slice(0, 24))})`,
+    );
+  }
+  const json = JSON.parse(text);
   const files: string[] = json.files ?? json;
-  return files.map((f) => `wadouri:${DICOM_DATA_URL_PREFIX}/${f}`);
+  if (!Array.isArray(files)) {
+    throw new Error('Manifest JSON must be an array or an object with `files` array');
+  }
+  return files;
+}
+
+export async function fetchImageIds(): Promise<string[]> {
+  const manifestUrl = new URL('manifest.json', getDicomDataDirUrl());
+  let files: string[];
+  try {
+    const res = await fetch(manifestUrl);
+    if (!res.ok) throw new Error(`Failed to fetch manifest.json (${res.status})`);
+    files = parseManifestPayload(await res.text());
+  } catch (e) {
+    // Retry once with a cache-busting query in case an old SW cache entry contains bad data.
+    const busted = new URL(manifestUrl);
+    busted.searchParams.set('refresh', `${Date.now()}`);
+    const res2 = await fetch(busted, { cache: 'no-store' });
+    if (!res2.ok) {
+      throw new Error(
+        `Failed to fetch manifest.json after retry (${res2.status}): ${
+          e instanceof Error ? e.message : String(e)
+        }`,
+      );
+    }
+    files = parseManifestPayload(await res2.text());
+  }
+  const dir = getDicomDataDirUrl();
+  return files.map((f) => {
+    const rel = f.replace(/^\/+/, '');
+    return `wadouri:${new URL(rel, dir).href}`;
+  });
 }
 
 export async function prefetchAndSort(

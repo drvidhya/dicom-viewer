@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Scans dicom/data for DICOM files and writes dicom/data/manifest.json
- * (relative paths, POSIX slashes) for the viewer's /dicom/data/* URLs.
+ * (relative paths, POSIX slashes) for the viewer's dicom/data/* URLs (resolved vs. each HTML page).
  *
  * Usage: node src/scripts/generate-dicom-manifest.mjs
  *    or: npm run gen:manifest

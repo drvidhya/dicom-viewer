@@ -136,6 +136,48 @@
         line-height: 1.55;
       }
 
+      .dash-cache-bar {
+        margin: 0 14px 12px;
+        padding: 10px 12px;
+        background: var(--bg3);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 10px 14px;
+      }
+      .cache-status {
+        flex: 1 1 200px;
+        font-size: 11px;
+        color: var(--muted);
+        line-height: 1.45;
+      }
+      .cache-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+      .cache-btn {
+        padding: 6px 12px;
+        border-radius: 8px;
+        font-size: 11px;
+        font-weight: 600;
+        cursor: pointer;
+        border: 1px solid var(--border);
+        background: var(--bg2);
+        color: var(--text);
+        transition: background 0.15s, border-color 0.15s;
+      }
+      .cache-btn:hover:not(:disabled) {
+        background: var(--bg);
+        border-color: var(--muted);
+      }
+      .cache-btn:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+      }
+
       .dash-views {
         padding: 0 14px 14px;
         display: flex; flex-direction: column; gap: 10px;
@@ -361,8 +403,15 @@
             <div class="meta-row"><span class="meta-lbl">Matrix</span><span class="meta-val">—</span></div>
           </div>
           <p class="dash-hint">
-            Use <strong>Open</strong> to launch each plane in its own window. When a window is open, drag the slice slider (or scroll with the wheel in that window) to move through the stack.
+            Use <strong>Open</strong> to launch each plane in its own window. A <strong>service worker</strong> cache stores <code>/data/</code> responses so viewer windows skip repeat downloads (each window still builds its own Cornerstone volume). When a viewer is open, use the slice slider here or the mouse wheel in that window.
           </p>
+          <div class="dash-cache-bar" id="dash-cache-bar">
+            <span class="cache-status" id="cache-sw-status">Offline file cache: …</span>
+            <div class="cache-actions">
+              <button type="button" class="cache-btn" id="btn-cache-clear">Clear file cache</button>
+              <button type="button" class="cache-btn" id="btn-cache-rebuild">Clear &amp; refetch series</button>
+            </div>
+          </div>
           <div class="dash-views">
             <div class="view-card" id="card-axial">
               <div class="view-box-head">

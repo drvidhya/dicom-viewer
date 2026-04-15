@@ -3,6 +3,17 @@ import basicSsl from '@vitejs/plugin-basic-ssl';
 import fs from 'fs';
 import path from 'path';
 
+/**
+ * Default dev server is HTTP so `http://localhost:3000` works as a secure context
+ * and service workers can register (self-signed HTTPS makes the browser reject the SW script).
+ * Use HTTPS when needed (e.g. some device testing): VITE_DEV_HTTPS=1 npm run dev
+ */
+const useDevHttps =
+  process.env.VITE_DEV_HTTPS === '1' || process.env.VITE_DEV_HTTPS === 'true';
+
+/** When you open the dev app from another device (http://THIS_IP:3000), set this to that same IP or hostname so HMR websockets connect correctly. */
+const devHmrHost = process.env.VITE_DEV_HMR_HOST;
+
 function cornerstoneCodecPlugin(): Plugin {
   const stub = `
     export default function() { return Promise.resolve({}); }
@@ -78,7 +89,7 @@ export default defineConfig({
   publicDir: 'public',
   base: './',
   plugins: [
-    basicSsl(),
+    ...(useDevHttps ? [basicSsl()] : []),
     cornerstoneCodecPlugin(),
     staticDataPlugin(),
     debugLogPlugin(),
@@ -86,7 +97,21 @@ export default defineConfig({
   server: {
     host: '0.0.0.0',
     port: 3000,
-    https: {},
+    ...(useDevHttps ? { https: {} } : {}),
+    ...(devHmrHost
+      ? {
+          hmr: {
+            host: devHmrHost,
+            port: 3000,
+            protocol: useDevHttps ? 'wss' : 'ws',
+            clientPort: 3000,
+          },
+        }
+      : {}),
+  },
+  preview: {
+    host: '0.0.0.0',
+    port: 4173,
   },
   build: {
     outDir: 'dist',

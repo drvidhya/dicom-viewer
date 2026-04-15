@@ -11,14 +11,23 @@ import {
 import { saveSession, loadSession } from './session';
 import { initCornerstone } from './cornerstone';
 import { ctVoiCallback, loadFromManifest, prefetchAll } from './dicom';
-import { updateStatus, updateProgress, hideOverlay, showError } from './ui';
+import {
+  registerDicomServiceWorker,
+  evictDicomHttpCache,
+  rebuildDicomHttpCache,
+  countDicomCacheEntries,
+} from './dicom-cache';
+import { updateStatus, updateProgress, hideOverlay, showOverlay, showError } from './ui';
 
 const VOLUME_ID = 'cornerstoneStreamingImageVolume:dicomVolume';
 const RENDERING_ENGINE_ID = 'dicomRE';
 const VIEWPORT_ID = 'vp-main';
 
 const viewParam = new URLSearchParams(window.location.search).get('view') as
-  | 'axial' | 'sagittal' | 'coronal' | null;
+  | 'axial'
+  | 'sagittal'
+  | 'coronal'
+  | null;
 const isViewer = viewParam !== null;
 
 const ORIENTATION_MAP: Record<string, Enums.OrientationAxis> = {
@@ -27,7 +36,10 @@ const ORIENTATION_MAP: Record<string, Enums.OrientationAxis> = {
   coronal:  Enums.OrientationAxis.CORONAL,
 };
 
-// ── Dashboard ──────────────────────────────────────────────────────────────
+const PLANE_IDS = ['axial', 'sagittal', 'coronal'] as const;
+type PlaneId = (typeof PLANE_IDS)[number];
+
+// ── Dashboard + popup viewers (BroadcastChannel — no shared Cornerstone heap) ─
 
 const viewChannel = new BroadcastChannel('dicom-viewer-views');
 const openViews = new Set<string>();
@@ -51,10 +63,9 @@ function updateViewCard(view: string) {
 }
 
 function setupViewCards(nFrames: number) {
-  const views = ['axial', 'sagittal', 'coronal'] as const;
   const maxGuess = String(Math.max(1, nFrames));
 
-  for (const view of views) {
+  for (const view of PLANE_IDS) {
     const openBtn = document.getElementById(`btn-${view}`) as HTMLButtonElement;
     const slider = document.getElementById(`slider-${view}`) as HTMLInputElement;
     openBtn.disabled = false;
@@ -101,8 +112,78 @@ function setupViewCards(nFrames: number) {
   });
 }
 
+function setupCacheControls(imageIds: string[]) {
+  const statusEl = document.getElementById('cache-sw-status');
+  const clearBtn = document.getElementById('btn-cache-clear') as HTMLButtonElement | null;
+  const rebuildBtn = document.getElementById('btn-cache-rebuild') as HTMLButtonElement | null;
+
+  async function refreshCacheStatusLine() {
+    if (!statusEl) return;
+    if (!('serviceWorker' in navigator) || !('caches' in window)) {
+      statusEl.textContent = 'Offline file cache: not supported in this browser';
+      return;
+    }
+    try {
+      const n = await countDicomCacheEntries();
+      const on = !!navigator.serviceWorker.controller;
+      statusEl.textContent = on
+        ? `Offline file cache: active · ${n} stored request(s)`
+        : `Offline file cache: installing… · ${n} stored request(s)`;
+    } catch {
+      statusEl.textContent = 'Offline file cache: could not read status';
+    }
+  }
+
+  if (!('serviceWorker' in navigator)) {
+    if (statusEl) statusEl.textContent = 'Offline file cache: not supported in this browser';
+    clearBtn?.setAttribute('disabled', '');
+    rebuildBtn?.setAttribute('disabled', '');
+    return;
+  }
+
+  void refreshCacheStatusLine();
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    void refreshCacheStatusLine();
+  });
+
+  clearBtn?.addEventListener('click', async () => {
+    if (clearBtn) clearBtn.disabled = true;
+    if (rebuildBtn) rebuildBtn.disabled = true;
+    try {
+      const n = await evictDicomHttpCache();
+      updateStatus(`Cleared ${n} cache bucket(s)`, 'ready');
+      await refreshCacheStatusLine();
+      setTimeout(() => updateStatus('Ready', 'ready'), 2200);
+    } finally {
+      if (clearBtn) clearBtn.disabled = false;
+      if (rebuildBtn) rebuildBtn.disabled = false;
+    }
+  });
+
+  rebuildBtn?.addEventListener('click', async () => {
+    if (clearBtn) clearBtn.disabled = true;
+    rebuildBtn.disabled = true;
+    updateStatus('Rebuilding cache…', 'loading');
+    showOverlay();
+    try {
+      await rebuildDicomHttpCache(imageIds, updateProgress);
+      updateStatus('Ready', 'ready');
+      await refreshCacheStatusLine();
+    } catch (e) {
+      console.error(e);
+      showError(e instanceof Error ? e.message : String(e));
+    } finally {
+      hideOverlay();
+      if (clearBtn) clearBtn.disabled = false;
+      rebuildBtn.disabled = false;
+    }
+  });
+}
+
 async function runDashboard() {
   updateStatus('Initialising…', 'loading');
+  updateProgress('Registering offline file cache…');
+  await registerDicomServiceWorker();
   updateProgress('Initialising Cornerstone3D…');
   await initCornerstone();
 
@@ -110,7 +191,8 @@ async function runDashboard() {
   const session = loadSession();
   if (session) {
     imageIds = session.imageIds;
-    updateProgress('Using cached session…');
+    updateProgress('Prefetching series (warms cache for viewer windows)…');
+    await prefetchAll(imageIds, (loaded, total) => updateProgress(`Prefetching ${loaded} / ${total}`));
   } else {
     const result = await loadFromManifest(updateProgress);
     imageIds = result.imageIds;
@@ -119,19 +201,18 @@ async function runDashboard() {
 
   populateInfo(imageIds[0], imageIds.length);
   setupViewCards(imageIds.length);
+  setupCacheControls(imageIds);
   hideOverlay();
   updateStatus('Ready', 'ready');
 }
 
-// ── Viewer window ──────────────────────────────────────────────────────────
+// ── Popup / standalone viewer (?view=) ──────────────────────────────────────
 
-async function runViewer(view: 'axial' | 'sagittal' | 'coronal') {
-  // Child window setup
+async function runViewer(view: PlaneId) {
   document.title = { axial: 'Axial', sagittal: 'Sagittal', coronal: 'Coronal' }[view];
   document.body.classList.add('child-view');
   document.querySelector('header')!.style.display = 'none';
 
-  // Swap content panes
   document.getElementById('main-content')!.style.display = 'none';
   const viewerContent = document.getElementById('viewer-content')!;
   viewerContent.style.display = '';
@@ -144,6 +225,8 @@ async function runViewer(view: 'axial' | 'sagittal' | 'coronal') {
   document.getElementById('load-bar')?.classList.add('loading');
 
   updateStatus('Initialising…', 'loading');
+  updateProgress('Registering offline file cache…');
+  await registerDicomServiceWorker();
   updateProgress('Initialising Cornerstone3D…');
   await initCornerstone();
 
@@ -154,9 +237,8 @@ async function runViewer(view: 'axial' | 'sagittal' | 'coronal') {
   if (session) {
     imageIds = session.imageIds;
     voiRange = session.voiRange;
-    // Must prefetch all images so per-tab metadata cache is populated.
-    // getClosestImageId iterates every imageId and destructures imagePositionPatient — throws if missing.
-    await prefetchAll(imageIds, (loaded, total) => updateProgress(`Prefetching ${loaded} / ${total}`));
+    await prefetchAll(imageIds, (loaded, total) =>
+      updateProgress(`Loading slices ${loaded} / ${total}…`));
   } else {
     ({ imageIds, voiRange } = await loadFromManifest(updateProgress));
     saveSession({ imageIds, voiRange });
@@ -179,7 +261,6 @@ async function runViewer(view: 'axial' | 'sagittal' | 'coronal') {
   const volume = await volumeLoader.createAndCacheVolume(VOLUME_ID, { imageIds });
   volume.load();
 
-  // Load bar: complete when all images are streamed into the volume
   const bar = document.getElementById('load-bar');
   if (bar) {
     let loaded = 0;
@@ -215,7 +296,8 @@ async function runViewer(view: 'axial' | 'sagittal' | 'coronal') {
 
   function postSliceSync() {
     try {
-      const info = utilities.getVolumeViewportScrollInfo(vp, VOLUME_ID);
+      const vport = renderingEngine.getViewport(VIEWPORT_ID) as Types.IVolumeViewport;
+      const info = utilities.getVolumeViewportScrollInfo(vport, VOLUME_ID);
       viewChannel.postMessage({
         type: 'sliceSync',
         view,
@@ -267,7 +349,7 @@ async function runViewer(view: 'axial' | 'sagittal' | 'coronal') {
   updateStatus('Ready', 'ready');
 }
 
-// ── Entry point ────────────────────────────────────────────────────────────
+// ── Entry point ───────────────────────────────────────────────────────────────
 
 (isViewer ? runViewer(viewParam!) : runDashboard()).catch((err) => {
   console.error(err);
@@ -287,7 +369,6 @@ function populateInfo(imageId: string, nSlices: number) {
   const row = (label: string, value: string) =>
     `<div class="meta-row"><span class="meta-lbl">${label}</span><span class="meta-val">${esc(value)}</span></div>`;
 
-  // Same compact fields as the XR dashboard canvas (`drawDashboard` in xr-main.ts).
   document.getElementById('dicom-info')!.innerHTML = [
     row('Patient', String(pm.patientName ?? '—')),
     row('Study', String(sm.studyDescription ?? '—')),

@@ -15,6 +15,11 @@ export function hideOverlay(): void {
   if (el) el.classList.add('hidden');
 }
 
+export function showOverlay(): void {
+  const el = document.getElementById('overlay');
+  if (el) el.classList.remove('hidden');
+}
+
 export function showError(msg: string): void {
   const el = document.getElementById('overlay');
   if (el) el.innerHTML = `<p class="error">${msg}</p>`;

@@ -59,16 +59,6 @@ function setupViewButtons() {
   });
 }
 
-function setupXRButton() {
-  const link = document.getElementById('vr-mode-link') as HTMLAnchorElement | null;
-  if (!link) return;
-  link.style.display = '';
-  link.addEventListener('click', (e) => {
-    e.preventDefault();
-    window.open('./xr.html', 'dicom-xr', 'width=1200,height=900,menubar=no,toolbar=no');
-  });
-}
-
 async function runDashboard() {
   updateStatus('Initialising…', 'loading');
   updateProgress('Initialising Cornerstone3D…');
@@ -87,7 +77,6 @@ async function runDashboard() {
 
   populateInfo(imageIds[0], imageIds.length);
   setupViewButtons();
-  setupXRButton();
   hideOverlay();
   updateStatus('Ready', 'ready');
 }

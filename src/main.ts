@@ -9,7 +9,13 @@ import {
 } from '@cornerstonejs/core';
 import { saveSession, loadSession } from './session';
 import { initCornerstone } from './cornerstone';
-import { ctVoiCallback, loadFromManifest, prefetchAll } from './dicom';
+import {
+  ctVoiCallback,
+  getVoiFromMetadata,
+  imageIdsReadyForVolume,
+  loadFromManifest,
+  prefetchAll,
+} from './dicom';
 import {
   registerDicomServiceWorker,
   evictDicomHttpCache,
@@ -190,16 +196,31 @@ async function runDashboard() {
   await initCornerstone();
 
   let imageIds: string[];
+  let voiRange: { lower: number; upper: number };
   const session = loadSession();
   if (session) {
     imageIds = session.imageIds;
+    voiRange = session.voiRange;
     updateProgress('Prefetching series (warms cache for viewer windows)…');
     await prefetchAll(imageIds, (loaded, total) => updateProgress(`Prefetching ${loaded} / ${total}`));
   } else {
     const result = await loadFromManifest(updateProgress);
     imageIds = result.imageIds;
-    saveSession(result);
+    voiRange = result.voiRange;
   }
+
+  const nDash = imageIds.length;
+  imageIds = imageIdsReadyForVolume(imageIds);
+  if (imageIds.length === 0) {
+    showError(
+      'No usable DICOM slices (missing metadata — often load/parse failure or unsupported transfer syntax).',
+    );
+    return;
+  }
+  if (imageIds.length !== nDash) {
+    voiRange = getVoiFromMetadata(imageIds[Math.floor(imageIds.length / 2)]);
+  }
+  saveSession({ imageIds, voiRange });
 
   applyDashboardChrome();
   populateInfo(imageIds[0], imageIds.length);
@@ -244,8 +265,19 @@ async function runViewer(view: PlaneId) {
       updateProgress(`Loading slices ${loaded} / ${total}…`));
   } else {
     ({ imageIds, voiRange } = await loadFromManifest(updateProgress));
-    saveSession({ imageIds, voiRange });
   }
+
+  const nBefore = imageIds.length;
+  imageIds = imageIdsReadyForVolume(imageIds);
+  if (imageIds.length === 0) {
+    throw new Error(
+      'No usable DICOM slices (missing metadata — often load/parse failure or unsupported transfer syntax).',
+    );
+  }
+  if (imageIds.length !== nBefore) {
+    voiRange = getVoiFromMetadata(imageIds[Math.floor(imageIds.length / 2)]);
+  }
+  saveSession({ imageIds, voiRange });
 
   updateProgress('Setting up viewport…');
   const renderingEngine = new RenderingEngine(RENDERING_ENGINE_ID);

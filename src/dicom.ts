@@ -1,11 +1,44 @@
 import { imageLoader, metaData } from '@cornerstonejs/core';
 
+/** URL path for manifest + slices (Vite dev middleware + `dist/dicom/data` when built). */
+export const DICOM_DATA_URL_PREFIX = '/dicom/data';
+
+/** Slices Cornerstone can build a volume from (wadouri cache + required tags present). */
+function imageIdReadyForVolume(id: string): boolean {
+  const px = metaData.get('imagePixelModule', id);
+  if (
+    !px ||
+    px.bitsAllocated == null ||
+    px.bitsStored == null ||
+    px.highBit == null ||
+    px.pixelRepresentation == null ||
+    px.photometricInterpretation == null ||
+    px.samplesPerPixel == null
+  ) {
+    return false;
+  }
+  const plane = metaData.get('imagePlaneModule', id);
+  if (
+    !plane?.rows ||
+    !plane.columns ||
+    !plane.imageOrientationPatient ||
+    plane.imageOrientationPatient.length < 6
+  ) {
+    return false;
+  }
+  return metaData.get('generalSeriesModule', id) != null;
+}
+
+export function imageIdsReadyForVolume(imageIds: string[]): string[] {
+  return imageIds.filter(imageIdReadyForVolume);
+}
+
 export async function fetchImageIds(): Promise<string[]> {
-  const res = await fetch('/data/manifest.json');
+  const res = await fetch(`${DICOM_DATA_URL_PREFIX}/manifest.json`);
   if (!res.ok) throw new Error('Failed to fetch manifest.json');
   const json = await res.json();
   const files: string[] = json.files ?? json;
-  return files.map((f) => `wadouri:/data/${f}`);
+  return files.map((f) => `wadouri:${DICOM_DATA_URL_PREFIX}/${f}`);
 }
 
 export async function prefetchAndSort(
@@ -30,8 +63,8 @@ export async function prefetchAndSort(
             instance: gim?.instanceNumber,
             z: ipm?.imagePositionPatient?.[2],
           });
-        } catch {
-          metas.push({ id });
+        } catch (e) {
+          console.warn('[dicom] skipped slice (load/parse failed):', id, e);
         }
       }),
     );
@@ -44,7 +77,14 @@ export async function prefetchAndSort(
     return 0;
   });
 
-  return metas.map((m) => m.id);
+  const sorted = metas.map((m) => m.id);
+  const ready = imageIdsReadyForVolume(sorted);
+  if (ready.length === 0) {
+    throw new Error(
+      'No DICOM slices could be loaded with full metadata. Check files, transfer syntax, and manifest paths.',
+    );
+  }
+  return ready;
 }
 
 export function getVoiFromMetadata(imageId: string): { lower: number; upper: number } {
@@ -69,7 +109,13 @@ export async function prefetchAll(
   const total = imageIds.length;
   for (let i = 0; i < total; i += BATCH) {
     const batch = imageIds.slice(i, Math.min(i + BATCH, total));
-    await Promise.all(batch.map((id) => imageLoader.loadAndCacheImage(id).catch(() => {})));
+    await Promise.all(
+      batch.map((id) =>
+        imageLoader.loadAndCacheImage(id).catch((e) => {
+          console.warn('[dicom] prefetch slice failed:', id, e);
+        }),
+      ),
+    );
     onProgress?.(Math.min(i + BATCH, total), total);
   }
 }
@@ -89,6 +135,7 @@ export async function loadFromManifest(
   const imageIds = await prefetchAndSort(rawIds, (loaded, total) => {
     onProgress(`Loading ${loaded} / ${total}`);
   });
-  const voiRange = getVoiFromMetadata(imageIds[Math.floor(imageIds.length / 2)]);
+  const mid = imageIds[Math.floor(imageIds.length / 2)];
+  const voiRange = getVoiFromMetadata(mid);
   return { imageIds, voiRange };
 }

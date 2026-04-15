@@ -1,7 +1,7 @@
 import { prefetchAll } from './dicom';
 
 /**
- * Must match CACHE_NAME in `public/service-worker.js`.
+ * Must match CACHE_NAME in `static/service-worker.js` (copied to dist root on build).
  * Bump the version suffix in both places when the caching strategy changes.
  */
 export const DICOM_SW_CACHE_NAME = 'dicom-viewer-data-v1';
@@ -31,7 +31,7 @@ export async function registerDicomServiceWorker(): Promise<ServiceWorkerRegistr
         e.name === 'SecurityError');
     if (sslHint) {
       console.warn(
-        '[dicom-cache] Service workers cannot load on untrusted HTTPS. Dev default is HTTP (`npm run dev` → http://localhost:3000). For HTTPS use a trusted cert, or `npm run dev:https` only if the browser trusts that cert.',
+        '[dicom-cache] Service workers cannot load on untrusted HTTPS. Use HTTP only (`npm run dev:http` → http://localhost:3000), a trusted HTTPS cert, or `npm run dev:https` (https://localhost:3001) if the browser trusts it. Default `npm run dev` starts both ports; SW/cache differ per origin.',
       );
     }
     return null;

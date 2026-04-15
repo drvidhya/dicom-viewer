@@ -9,6 +9,9 @@
  * Default `npm run dev` runs both; use `npm run dev:http` or `npm run dev:https` for one only.
  *
  * LAN HMR: set VITE_DEV_HMR_HOST to the machine IP/hostname for each origin you use.
+ *
+ * Static assets (copied verbatim to dist root): `static/` — e.g. service-worker.js for HTTPS deploys.
+ * DICOM series: dev serves `dicom/data` at `/dicom/data`; `npm run build` copies it to `dist/dicom/data`.
  */
 import { type UserConfig, type Plugin, type ViteDevServer } from 'vite';
 import basicSsl from '@vitejs/plugin-basic-ssl';
@@ -48,11 +51,15 @@ function cornerstoneCodecPlugin(): Plugin {
 
 function staticDataPlugin(): Plugin {
   const dataDir = path.join(process.cwd(), 'dicom', 'data');
+  const mountPath = '/dicom/data';
   return {
     name: 'static-data',
     configureServer(server: ViteDevServer) {
-      server.middlewares.use('/data', (req, res, next) => {
-        const filePath = path.join(dataDir, decodeURIComponent(req.url ?? ''));
+      server.middlewares.use(mountPath, (req, res, next) => {
+        let rel = decodeURIComponent((req.url ?? '/').split('?')[0]);
+        if (rel.startsWith(mountPath)) rel = rel.slice(mountPath.length);
+        rel = rel.replace(/^\//, '');
+        const filePath = path.join(dataDir, rel);
         if (!filePath.startsWith(dataDir)) { res.writeHead(403); res.end(); return; }
         fs.readFile(filePath, (err, data) => {
           if (err) { next(); return; }
@@ -62,6 +69,22 @@ function staticDataPlugin(): Plugin {
           res.end(data);
         });
       });
+    },
+  };
+}
+
+function copyDicomDataToDistPlugin(): Plugin {
+  return {
+    name: 'copy-dicom-data-to-dist',
+    closeBundle() {
+      const src = path.join(process.cwd(), 'dicom', 'data');
+      const dest = path.join(process.cwd(), 'dist', 'dicom', 'data');
+      if (!fs.existsSync(src)) {
+        console.warn('[vite] dicom/data not found — skipped copy to dist/dicom/data');
+        return;
+      }
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      fs.cpSync(src, dest, { recursive: true });
     },
   };
 }
@@ -93,14 +116,22 @@ function debugLogPlugin(): Plugin {
 }
 
 export function createDicomViewerViteConfig(dev: DicomViewerDevOptions): UserConfig {
+  const polySegStub = path.resolve(process.cwd(), 'src/shims/polyseg-wasm-stub.ts');
   return {
     root: '.',
-    publicDir: 'public',
+    publicDir: 'static',
     base: './',
+    resolve: {
+      alias: {
+        // Dynamic import inside @cornerstonejs/tools worker; Rollup does not use dev resolveId there.
+        '@icr/polyseg-wasm': polySegStub,
+      },
+    },
     plugins: [
       ...(dev.https ? [basicSsl()] : []),
       cornerstoneCodecPlugin(),
       staticDataPlugin(),
+      copyDicomDataToDistPlugin(),
       debugLogPlugin(),
     ],
     server: {

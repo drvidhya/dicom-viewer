@@ -29,7 +29,13 @@ import {
   type Types,
 } from '@cornerstonejs/core';
 import { initCornerstone } from './cornerstone';
-import { loadFromManifest, prefetchAll, ctVoiCallback } from './dicom';
+import {
+  ctVoiCallback,
+  getVoiFromMetadata,
+  imageIdsReadyForVolume,
+  loadFromManifest,
+  prefetchAll,
+} from './dicom';
 import {
   registerDicomServiceWorker,
   evictDicomHttpCache,
@@ -65,6 +71,10 @@ const CANVAS_PX  = 512;   // Cornerstone canvas pixel size
 const DASH_W_M  = 0.72;   // dashboard width in scene (metres)
 const DASH_CW   = 1024;   // dashboard texture width (px)
 const DASH_CH   = 1180;   // dashboard texture height (px)
+const DASH_H_METRES = DASH_W_M * (DASH_CH / DASH_CW);
+
+const VIEW_HEADER_PX_W = 512;
+const VIEW_HEADER_PX_H = 48;
 
 // Spawn offsets relative to the dashboard (x, y, z)
 const SPAWN_OFFSETS: Record<PlaneId, [number, number, number]> = {
@@ -102,6 +112,14 @@ let gXRCacheInteractable = true;
 let gXRCacheBusy         = false;
 let gXRRebuildImageIds: string[] = [];
 
+/** Grabbable handle for the main dashboard (center top). */
+let gDashDragEntity: ReturnType<World['createEntity']> | null = null;
+/** Dashboard body mesh (pose follows `gDashDragEntity`). */
+let gDashMeshRef: THREE.Mesh | null = null;
+
+const _tmpDashWorldPos = new THREE.Vector3();
+const _tmpDashWorldQuat = new THREE.Quaternion();
+
 type ViewPanel = {
   view:        PlaneId;
   vpId:        string;
@@ -114,19 +132,34 @@ type ViewPanel = {
   // Separate grabbable handle entities
   dragHandleEntity:   ReturnType<World['createEntity']>;
   resizeHandleEntity: ReturnType<World['createEntity']>;
-  // Last-known positions for delta tracking
-  lastDragPos:   THREE.Vector3;
+  /** Last resize-handle position (detect grab-driven resize deltas). */
   lastResizePos: THREE.Vector3;
+  headerCanvas:  HTMLCanvasElement;
+  headerCtx:     CanvasRenderingContext2D;
+  headerTexture: THREE.CanvasTexture;
 };
 
 // Local offsets from panel center to each handle (at scale 1.0).
-// World position = panelPos + rotateLocal(offset * scale).
-const DRAG_HANDLE_OFFSET   = new THREE.Vector3(PANEL_W / 2 - 0.02,  PANEL_H / 2 + HEADER_H + 0.01, 0.005);
+// Drag: center top. World position = panelPos + rotateLocal(offset * scale).
+const DRAG_HANDLE_TOP_MARGIN = 0.03;
+const DRAG_HANDLE_OFFSET = new THREE.Vector3(
+  0,
+  PANEL_H / 2 + HEADER_H + DRAG_HANDLE_TOP_MARGIN,
+  0.006,
+);
 const RESIZE_HANDLE_OFFSET = new THREE.Vector3(PANEL_W / 2 - 0.02, -PANEL_H / 2 + 0.02,           0.005);
+
+const DASH_DRAG_TOP_MARGIN = 0.045;
+const DASH_DRAG_HANDLE_OFFSET = new THREE.Vector3(
+  0,
+  DASH_H_METRES / 2 + DASH_DRAG_TOP_MARGIN,
+  0.014,
+);
 const RESIZE_HANDLE_BASE_LEN = RESIZE_HANDLE_OFFSET.length();
 
 const _tmpResizeDir = new THREE.Vector3();
 const _tmpDragCorner = new THREE.Vector3();
+const _tmpRhCorner   = new THREE.Vector3();
 
 function resizeHandleWorldDir(panelObj: THREE.Object3D, target: THREE.Vector3): THREE.Vector3 {
   return target
@@ -256,46 +289,69 @@ async function runXRCacheRebuild(): Promise<void> {
 
 class DicomSystem extends createSystem({}) {
   update(delta: number, _time: number) {
-    // ── Drag / Resize handle sync ─────────────────────────────────────────────
-    // Each panel has two separate IWSDK entities (drag handle, resize handle).
-    // When a handle is grabbed its position changes; we detect the delta and
-    // apply it to the panel (drag) or recompute scale (resize).
+    const sliceStates = getSliceStates();
+
+    // ── Main dashboard: center-top drag handle drives position + rotation ─────
+    if (gDashMeshRef && gDashDragEntity) {
+      const dashObj = gDashMeshRef;
+      const dhObj   = gDashDragEntity.object3D!;
+      const dhPos   = dhObj.position;
+      _tmpDragCorner.copy(DASH_DRAG_HANDLE_OFFSET);
+      _tmpDragCorner.applyQuaternion(dhObj.quaternion);
+      dashObj.position.copy(dhPos).sub(_tmpDragCorner);
+      dashObj.quaternion.copy(dhObj.quaternion);
+    }
+
+    // ── View panels: move handle (center top) + resize handle ─────────────────
+    // Move handle: OneHandGrabbable updates its world pose; panel matches that
+    // position + rotation with the drag anchor fixed to the handle.
+    // Resize handle: delta along the bottom-right diagonal updates uniform scale.
     for (const panel of gPanels.values()) {
       const panelObj = panel.entity.object3D!;
-      const dhPos    = panel.dragHandleEntity.object3D!.position;
+      const dhObj    = panel.dragHandleEntity.object3D!;
+      const dhPos    = dhObj.position;
       const rhPos    = panel.resizeHandleEntity.object3D!.position;
 
-      // ── Drag: panel follows handle ──
-      const dragDelta = dhPos.clone().sub(panel.lastDragPos);
-      if (dragDelta.lengthSq() > 1e-10) {
-        panelObj.position.add(dragDelta);
-        rhPos.add(dragDelta);           // keep resize handle relative to panel
-        panel.lastResizePos.add(dragDelta);
-      }
-      panel.lastDragPos.copy(dhPos);
-
-      // ── Resize: uniform scale; snap resize handle to bottom-right diagonal (same aspect) ──
+      // ── Resize: uniform scale; snap resize handle on bottom-right diagonal ──
       const resizeDelta = rhPos.clone().sub(panel.lastResizePos);
       if (resizeDelta.lengthSq() > 1e-10) {
-        const center  = panelObj.position;
+        const center   = panelObj.position;
         const worldDir = resizeHandleWorldDir(panelObj, _tmpResizeDir);
-        const tAlong  = rhPos.clone().sub(center).dot(worldDir);
-        const scale   = THREE.MathUtils.clamp(tAlong / RESIZE_HANDLE_BASE_LEN, 0.3, 3.0);
-        panelObj.scale.setScalar(scale);
-        rhPos.copy(center).addScaledVector(worldDir, scale * RESIZE_HANDLE_BASE_LEN);
-        const dragCorner = scaledLocalOffsetWorld(panelObj, DRAG_HANDLE_OFFSET, scale, _tmpDragCorner);
-        dhPos.copy(center).add(dragCorner);
-        panel.lastDragPos.copy(dhPos);
+        const tAlong   = rhPos.clone().sub(center).dot(worldDir);
+        const newScale = THREE.MathUtils.clamp(tAlong / RESIZE_HANDLE_BASE_LEN, 0.3, 3.0);
+        panelObj.scale.setScalar(newScale);
+        rhPos.copy(center).addScaledVector(worldDir, newScale * RESIZE_HANDLE_BASE_LEN);
+        scaledLocalOffsetWorld(panelObj, DRAG_HANDLE_OFFSET, newScale, _tmpDragCorner);
+        dhPos.copy(center).add(_tmpDragCorner);
+        dhObj.quaternion.copy(panelObj.quaternion);
       }
+
+      // ── Move handle: panel position + rotation match handle (grabbable rotates by default) ──
+      const scale = panelObj.scale.x;
+      _tmpDragCorner.copy(DRAG_HANDLE_OFFSET).multiplyScalar(scale);
+      _tmpDragCorner.applyQuaternion(dhObj.quaternion);
+      panelObj.position.copy(dhPos).sub(_tmpDragCorner);
+      panelObj.quaternion.copy(dhObj.quaternion);
+
+      scaledLocalOffsetWorld(panelObj, RESIZE_HANDLE_OFFSET, scale, _tmpRhCorner);
+      rhPos.copy(panelObj.position).add(_tmpRhCorner);
       panel.lastResizePos.copy(rhPos);
+
+      const ss = sliceStates.get(panel.view);
+      redrawViewPanelHeader(
+        panel.headerCtx,
+        panel.view,
+        ss?.current ?? 1,
+        ss?.total ?? 0,
+      );
+      panel.headerTexture.needsUpdate = true;
     }
 
     // ── Dashboard redraw ──────────────────────────────────────────────────────
     if (gDashboardDirty && gDashCtx && gDashTexture && gDashMeta && gOpenViews) {
       gDashboardDirty = false;
-      const ss = getSliceStates();
       const { openBtnRects, sliderRects, cacheBtnRects } = drawDashboard(
-        gDashCtx, gDashMeta, gOpenViews, ss,
+        gDashCtx, gDashMeta, gOpenViews, sliceStates,
       );
       gOpenBtnRects  = openBtnRects;
       gSliderRects   = sliderRects;
@@ -707,43 +763,78 @@ function drawDashboard(
   return { openBtnRects, sliderRects, cacheBtnRects };
 }
 
-/** Draws the coloured title-bar canvas for a view panel. */
-function makeHeaderCanvas(view: PlaneId): HTMLCanvasElement {
-  const c = document.createElement('canvas');
-  c.width  = 512;
-  c.height = 48;
-  const ctx = c.getContext('2d')!;
-
+/** Title bar: plane name (left) and slice index / count (right). */
+function redrawViewPanelHeader(
+  ctx: CanvasRenderingContext2D,
+  view: PlaneId,
+  current: number,
+  total: number,
+): void {
   const col = VIEW_COLORS_HEX[view];
-  const g   = ctx.createLinearGradient(0, 0, 512, 0);
+  const g   = ctx.createLinearGradient(0, 0, VIEW_HEADER_PX_W, 0);
   g.addColorStop(0, col);
   g.addColorStop(1, col + 'cc');
   ctx.fillStyle = g;
-  ctx.fillRect(0, 0, 512, 48);
+  ctx.fillRect(0, 0, VIEW_HEADER_PX_W, VIEW_HEADER_PX_H);
 
   ctx.fillStyle = 'rgba(0,0,0,0.55)';
   ctx.font      = 'bold 26px system-ui, sans-serif';
   ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
   ctx.fillText(VIEW_LABELS[view], 14, 32);
 
-  ctx.fillStyle = 'rgba(0,0,0,0.45)';
-  ctx.font      = '20px system-ui, sans-serif';
+  const readout =
+    total > 0
+      ? `${Math.min(Math.max(1, current), total)} / ${total}`
+      : '— / —';
+  ctx.fillStyle = 'rgba(0,0,0,0.55)';
+  ctx.font      = 'bold 22px system-ui, sans-serif';
   ctx.textAlign = 'right';
-  ctx.fillText('↑↓ scroll  •  ⠿ drag  •  ⊿ resize', 498, 32);
+  ctx.fillText(readout, VIEW_HEADER_PX_W - 14, 32);
+}
 
-  return c;
+/** Four-direction move icon (arrows along ±x / ±y) at (cx, cy). */
+function drawFourWayMoveIcon(ctx: CanvasRenderingContext2D, cx: number, cy: number, arm: number): void {
+  ctx.strokeStyle = 'rgba(255,255,255,0.92)';
+  ctx.fillStyle   = 'rgba(255,255,255,0.92)';
+  ctx.lineWidth   = 3.2;
+  ctx.lineCap     = 'round';
+  ctx.lineJoin    = 'round';
+
+  const dirs: [number, number][] = [[0, -1], [0, 1], [-1, 0], [1, 0]];
+  const shaft = arm * 0.42;
+  const head  = arm * 0.22;
+
+  for (const [dx, dy] of dirs) {
+    const vx = dx * arm;
+    const vy = dy * arm;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(cx + dx * shaft, cy + dy * shaft);
+    ctx.stroke();
+
+    const tipX = cx + vx;
+    const tipY = cy + vy;
+    const ox = Math.abs(dy) * head;
+    const oy = Math.abs(dx) * head;
+    ctx.beginPath();
+    ctx.moveTo(tipX, tipY);
+    ctx.lineTo(tipX - dx * head + (dx === 0 ? -ox : 0), tipY - dy * head + (dy === 0 ? -oy : 0));
+    ctx.lineTo(tipX - dx * head + (dx === 0 ? ox : 0), tipY - dy * head + (dy === 0 ? oy : 0));
+    ctx.closePath();
+    ctx.fill();
+  }
 }
 
 // ── Handle mesh factories ─────────────────────────────────────────────────────
 
-/** Grab-handle badge drawn at the top-right of each view panel. */
+/** Center-top grab badge with four-way move arrows. */
 function makeDragHandleMesh(col: string): THREE.Mesh {
   const c   = document.createElement('canvas');
   c.width   = 144;
   c.height  = 72;
   const ctx = c.getContext('2d')!;
 
-  // Rounded background
   const g = ctx.createLinearGradient(0, 0, 144, 0);
   g.addColorStop(0, col + 'dd');
   g.addColorStop(1, col);
@@ -751,16 +842,7 @@ function makeDragHandleMesh(col: string): THREE.Mesh {
   rrect(ctx, 4, 4, 136, 64, 16);
   ctx.fill();
 
-  // Three horizontal grip lines
-  ctx.fillStyle = 'rgba(255,255,255,0.75)';
-  for (let i = 0; i < 3; i++) {
-    ctx.fillRect(24, 20 + i * 14, 56, 5);
-  }
-  // Arrow icon on the right
-  ctx.fillStyle = 'rgba(255,255,255,0.9)';
-  ctx.font      = 'bold 32px sans-serif';
-  ctx.textAlign = 'center';
-  ctx.fillText('⠿', 112, 47);
+  drawFourWayMoveIcon(ctx, 72, 36, 22);
 
   return new THREE.Mesh(
     new THREE.PlaneGeometry(0.09, 0.045),
@@ -861,7 +943,12 @@ async function openViewPanel(
     new THREE.MeshBasicMaterial({ map: texture, side: THREE.DoubleSide }),
   );
 
-  const headerCanvas = makeHeaderCanvas(view);
+  const headerCanvas = document.createElement('canvas');
+  headerCanvas.width  = VIEW_HEADER_PX_W;
+  headerCanvas.height = VIEW_HEADER_PX_H;
+  const headerCtx = headerCanvas.getContext('2d')!;
+  redrawViewPanelHeader(headerCtx, view, 1, 0);
+
   const headerTex    = new THREE.CanvasTexture(headerCanvas);
   const headerMesh   = new THREE.Mesh(
     new THREE.PlaneGeometry(PANEL_W, HEADER_H),
@@ -883,12 +970,7 @@ async function openViewPanel(
   entity.addComponent(Interactable, {});
   (entity.object3D as any).pointerEventsType = 'all';
 
-  viewportMesh.addEventListener('pointerenter', () => { gHoveredView = panel; });
-  viewportMesh.addEventListener('pointerleave', () => {
-    if (gHoveredView === panel) gHoveredView = null;
-  });
-
-  // ── Drag handle (top-right) — the ONLY grabbable part of the panel ──
+  // ── Drag handle (center top) — the ONLY grabbable move target on the panel ──
   const col              = VIEW_COLORS_HEX[view];
   const dragHandleMesh   = makeDragHandleMesh(col);
   const initDragPos      = spawnPos.clone().add(DRAG_HANDLE_OFFSET);
@@ -911,9 +993,14 @@ async function openViewPanel(
     view, vpId, domEl, panelCanvas, panelCtx,
     csCanvas: null, texture, entity,
     dragHandleEntity, resizeHandleEntity,
-    lastDragPos:   initDragPos.clone(),
     lastResizePos: initResizePos.clone(),
+    headerCanvas, headerCtx, headerTexture: headerTex,
   };
+
+  viewportMesh.addEventListener('pointerenter', () => { gHoveredView = panel; });
+  viewportMesh.addEventListener('pointerleave', () => {
+    if (gHoveredView === panel) gHoveredView = null;
+  });
 
   gPanels.set(view, panel);
 }
@@ -930,6 +1017,7 @@ function closeViewPanel(view: PlaneId): void {
   try { gRE?.disableElement(panel.vpId); } catch { /* ignore */ }
   document.body.removeChild(panel.domEl);
   panel.texture.dispose();
+  panel.headerTexture.dispose();
 
   gPanels.delete(view);
 }
@@ -971,12 +1059,28 @@ async function createDashboard(
   );
   mesh.position.set(0, 1.5, -1.7);
 
+  gDashMeshRef = mesh;
+
   const entity = world.createTransformEntity(mesh);
   entity.addComponent(Interactable, {});
-  entity.addComponent(OneHandGrabbable, {});
-  // GrabSystem sets pointerEventsType = { deny: 'ray' } when OneHandGrabbable
-  // is attached, which blocks click events.  Restore ray access immediately.
+  // Dashboard body: clicks only (no grab). Moving uses the center-top handle.
   (entity.object3D as any).pointerEventsType = 'all';
+
+  if (gDashDragEntity) {
+    gDashDragEntity.destroy();
+    gDashDragEntity = null;
+  }
+  const dashDragMesh = makeDragHandleMesh('#3d4a5c');
+  mesh.getWorldPosition(_tmpDashWorldPos);
+  mesh.getWorldQuaternion(_tmpDashWorldQuat);
+  dashDragMesh.position
+    .copy(_tmpDashWorldPos)
+    .add(DASH_DRAG_HANDLE_OFFSET.clone().applyQuaternion(_tmpDashWorldQuat));
+  dashDragMesh.quaternion.copy(_tmpDashWorldQuat);
+  gDashDragEntity = world.createTransformEntity(dashDragMesh);
+  gDashDragEntity.addComponent(Interactable, {});
+  gDashDragEntity.addComponent(OneHandGrabbable, {});
+  (gDashDragEntity.object3D as any).pointerEventsType = 'all';
 
   // ── Input event handling ──
   // A quick trigger tap (< 300 ms) synthesises a 'click' event via
@@ -1059,8 +1163,19 @@ async function main(): Promise<void> {
       const result = await loadFromManifest(setProgress);
       imageIds  = result.imageIds;
       gVoiRange = result.voiRange;
-      saveSession(result);
     }
+
+    const nXr = imageIds.length;
+    imageIds = imageIdsReadyForVolume(imageIds);
+    if (imageIds.length === 0) {
+      throw new Error(
+        'No usable DICOM slices (missing metadata — often load/parse failure or unsupported transfer syntax).',
+      );
+    }
+    if (imageIds.length !== nXr) {
+      gVoiRange = getVoiFromMetadata(imageIds[Math.floor(imageIds.length / 2)]);
+    }
+    saveSession({ imageIds, voiRange: gVoiRange });
 
     setProgress('Creating DICOM volume…');
     gRE = new RenderingEngine(RE_ID);

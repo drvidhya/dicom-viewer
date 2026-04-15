@@ -4,12 +4,12 @@ export const DASH_TITLE = 'DICOM Viewer';
 
 /** Inner HTML for `.dash-hint` on the 2D page (static markup only). */
 export const DASH_HINT_2D_HTML =
-  'Use <strong>Open</strong> to launch each plane in its own window. A <strong>service worker</strong> cache stores <code>/data/</code> responses so viewer windows skip repeat downloads (each window still builds its own Cornerstone volume). When a viewer is open, use the slice slider here or the mouse wheel in that window.';
+  'Use <strong>Open</strong> to launch each plane in its own window. A <strong>service worker</strong> cache stores <code>/dicom/data/</code> responses so viewer windows skip repeat downloads (each window still builds its own Cornerstone volume). When a viewer is open, use the slice slider here or the mouse wheel in that window.';
 
 /** Plain text for the XR canvas dashboard (wrapped by `drawDashboard`). */
 export const DASH_HINT_XR_PLAIN =
   'Use Open to open or close each plane as a floating panel. A service worker cache stores ' +
-  '/data/ responses the same as the 2D viewer. When a panel is open, use the slice slider ' +
+  '/dicom/data/ responses the same as the 2D viewer. When a panel is open, use the slice slider ' +
   'here, the thumbstick while pointing at the panel, or tap the track to jump.';
 
 export const CACHE_BTN_CLEAR = 'Clear file cache';

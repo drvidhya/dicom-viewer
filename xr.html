@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="xr-spatial-tracking" content="allow" />
+    <title>DICOM XR Viewer</title>
+    <style>
+      #xr-root:not(.xr-scene-ready) { visibility: hidden; }
+    </style>
+    <script type="module" crossorigin src="./assets/xr-BkWep-q9.js"></script>
+    <link rel="modulepreload" crossorigin href="./assets/modulepreload-polyfill-B5Qt9EMX.js">
+    <link rel="modulepreload" crossorigin href="./assets/viewer-planes-N6I7SR0N.js">
+    <link rel="modulepreload" crossorigin href="./assets/GLTFLoader-B84fONps.js">
+    <link rel="stylesheet" crossorigin href="./assets/viewer-planes-DxTM6UWW.css">
+    <link rel="stylesheet" crossorigin href="./assets/xr-LYZf5WJ5.css">
+  </head>
+  <body>
+    <a id="back-link" href="./index.html">← Back to 2D viewer</a>
+
+    <div id="xr-root">
+      <div id="scene-container"></div>
+    </div>
+
+    <div id="xr-overlay">
+      <div class="xr-logo">Rx</div>
+      <div class="spinner"></div>
+      <div id="xr-progress">Initialising…</div>
+      <p class="xr-hint">
+        On Quest Browser: tap the <strong>AR</strong> icon in the address bar or
+        the Enter AR button. The main dashboard floats in the scene — use
+        <strong>Open</strong> and the slice sliders there (same layout as the 2D viewer).
+      </p>
+    </div>
+
+  </body>
+</html>

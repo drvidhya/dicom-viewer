@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DICOM Viewer</title>
+    <style>
+      /* Hide dashboard until JS fills markup (avoids empty layout flash). */
+      #main-content:not(.dashboard-ready) { visibility: hidden; }
+    </style>
+    <script type="module" crossorigin src="./assets/main-BAtJhaB3.js"></script>
+    <link rel="modulepreload" crossorigin href="./assets/modulepreload-polyfill-B5Qt9EMX.js">
+    <link rel="modulepreload" crossorigin href="./assets/viewer-planes-N6I7SR0N.js">
+    <link rel="stylesheet" crossorigin href="./assets/viewer-planes-DxTM6UWW.css">
+    <link rel="stylesheet" crossorigin href="./assets/main-CZrxO9Oa.css">
+  </head>
+  <body>
+    <div id="load-bar"></div>
+    <div id="app">
+      <header>
+        <div class="logo">
+          <div class="logo-badge">Rx</div>
+          <h1 id="view-title">DICOM Viewer</h1>
+          <a id="vr-mode-link" class="vr-link" href="./xr.html" target="_blank">&#x2B21; XR Mode</a>
+        </div>
+
+        <div class="status">
+          <span id="status-text">Initialising…</span>
+          <div class="dot loading" id="status-dot"></div>
+        </div>
+      </header>
+
+      <div id="main-content">
+        <div class="dash-panel">
+          <div class="dash-header">
+            <div class="dash-logo">Rx</div>
+            <h2 class="dash-title"></h2>
+          </div>
+          <div id="dicom-info"></div>
+          <p class="dash-hint"></p>
+          <div class="dash-cache-bar" id="dash-cache-bar">
+            <span class="cache-status" id="cache-sw-status"></span>
+            <div class="cache-actions">
+              <button type="button" class="cache-btn" id="btn-cache-clear"></button>
+              <button type="button" class="cache-btn" id="btn-cache-rebuild"></button>
+            </div>
+          </div>
+          <div class="dash-views"></div>
+        </div>
+      </div>
+
+      <div class="main-content" id="viewer-content" style="display:none">
+        <div class="vp-container">
+          <div class="vp-header axial" id="vp-header">Axial</div>
+          <div id="vp-main"></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="overlay">
+      <div class="spinner"></div>
+      <div id="progress">Initialising…</div>
+    </div>
+
+  </body>
+</html>

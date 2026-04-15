@@ -1,5 +1,4 @@
-dicom/others
-
+dicom
 node_modules
 dist
 client-logs.jsonl

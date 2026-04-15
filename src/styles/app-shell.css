@@ -1,0 +1,91 @@
+/* 2D app chrome: header, viewer grid, load bar */
+
+#app { display: flex; flex-direction: column; height: 100%; }
+
+header {
+  flex-shrink: 0;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 20px;
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+}
+
+.logo { display: flex; align-items: center; gap: 10px; }
+.logo-badge {
+  width: 34px; height: 34px; border-radius: 8px;
+  background: linear-gradient(135deg, var(--axial), var(--coronal));
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 700; font-size: 12px; color: #000;
+}
+.logo h1 { font-size: 16px; font-weight: 500; letter-spacing: -0.3px; }
+.vr-link {
+  font-size: 12px; color: var(--xr);
+  text-decoration: none; opacity: 0.8;
+  transition: opacity 0.15s;
+}
+.vr-link:hover { opacity: 1; text-decoration: underline; }
+
+.status { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--muted); }
+.dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--muted);
+  animation: pulse 2s infinite;
+}
+.dot.loading { background: #f59e0b; }
+.dot.ready   { background: var(--axial); animation: none; }
+.dot.error   { background: #ef4444; animation: none; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+
+.main-content {
+  flex: 1; min-height: 0;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 4px; padding: 4px;
+}
+.main-content.full { padding: 0; gap: 0; }
+
+body.child-view #vp-header { display: none; }
+body.child-view .vp-container { border: none; border-radius: 0; }
+
+.vp-container {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  display: flex; flex-direction: column;
+}
+.vp-header {
+  flex-shrink: 0; padding: 7px 12px;
+  background: var(--bg3); border-bottom: 1px solid var(--border);
+  font-size: 11px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.6px;
+}
+.vp-header.axial    { color: var(--axial); }
+.vp-header.sagittal { color: var(--sagittal); }
+.vp-header.coronal  { color: var(--coronal); }
+#vp-main { flex: 1; min-height: 0; background: #000; position: relative; }
+
+#load-bar {
+  position: fixed; top: 0; left: 0; right: 0;
+  height: 2px; z-index: 200;
+  display: none; overflow: hidden;
+  pointer-events: none;
+}
+#load-bar.loading {
+  display: block;
+  background: rgba(0, 212, 170, 0.15);
+}
+#load-bar.loading::after {
+  content: '';
+  position: absolute; top: 0; height: 100%;
+  width: 35%; left: -35%;
+  background: var(--axial);
+  animation: lb-scan 1.4s ease-in-out infinite;
+}
+@keyframes lb-scan { to { left: 135%; } }
+#load-bar.done {
+  display: block;
+  background: var(--axial);
+  opacity: 0;
+  transition: opacity 0.5s;
+}

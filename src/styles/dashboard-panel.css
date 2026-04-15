@@ -1,0 +1,228 @@
+/* Floating dashboard panel (2D #main-content); XR draws the same layout on canvas */
+
+#main-content {
+  flex: 1; min-height: 0;
+  display: flex; align-items: center; justify-content: center;
+  padding: 12px 16px;
+  overflow: auto;
+}
+
+.dash-panel {
+  width: 100%; max-width: 560px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  overflow: hidden;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
+}
+
+.dash-header {
+  display: flex; align-items: center; gap: 14px;
+  padding: 14px 18px 12px;
+  background: linear-gradient(90deg, #1c2430, var(--bg2));
+  border-bottom: 1px solid var(--border);
+}
+.dash-logo {
+  flex-shrink: 0;
+  width: 44px; height: 44px; border-radius: 11px;
+  background: linear-gradient(135deg, var(--axial), var(--coronal));
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 700; font-size: 15px; color: #000; letter-spacing: -0.5px;
+}
+.dash-title {
+  font-size: clamp(18px, 4vw, 22px);
+  font-weight: 700;
+  letter-spacing: -0.4px;
+}
+
+#dicom-info {
+  padding: 12px 18px 10px;
+  font-size: 13px;
+}
+.meta-row {
+  display: flex; align-items: baseline;
+  gap: 12px;
+  padding: 6px 0;
+  border-bottom: 1px solid transparent;
+}
+.meta-row + .meta-row { border-top: 1px solid rgba(42, 50, 61, 0.6); }
+.meta-lbl {
+  flex: 0 0 92px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.meta-val {
+  flex: 1; min-width: 0;
+  color: var(--text);
+  text-align: left;
+  font-size: 13px;
+  word-break: break-word;
+}
+
+.dash-hint {
+  margin: 0 18px;
+  padding: 10px 0 12px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  font-style: italic;
+  color: var(--muted);
+  text-align: center;
+  line-height: 1.55;
+}
+
+.dash-cache-bar {
+  margin: 0 14px 12px;
+  padding: 10px 12px;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+}
+.cache-status {
+  flex: 1 1 200px;
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.45;
+}
+.cache-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.cache-btn {
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--bg2);
+  color: var(--text);
+  transition: background 0.15s, border-color 0.15s;
+}
+.cache-btn:hover:not(:disabled) {
+  background: var(--bg);
+  border-color: var(--muted);
+}
+.cache-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.dash-views {
+  padding: 0 14px 14px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+
+.view-card {
+  display: flex; flex-direction: column; align-items: stretch;
+  text-align: left;
+  background: var(--bg3);
+  border: 1.5px solid #2d3744;
+  border-radius: 14px;
+  color: var(--text);
+  transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
+}
+
+.view-box-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 14px 10px;
+}
+.view-dot {
+  width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0;
+  background: #4a5260;
+  transition: background 0.2s, box-shadow 0.2s;
+}
+.view-name {
+  font-size: 16px; font-weight: 700;
+}
+.view-state {
+  font-size: 11px;
+  color: var(--muted);
+  max-width: 88px;
+  line-height: 1.25;
+}
+
+.open-view-btn {
+  margin-left: auto;
+  flex-shrink: 0;
+  padding: 6px 14px;
+  border-radius: 8px;
+  font-size: 12px; font-weight: 600;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--bg2);
+  color: var(--text);
+  transition: border-color 0.15s, background 0.15s, color 0.15s;
+}
+.open-view-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.open-view-btn:not(:disabled):hover {
+  background: var(--bg);
+}
+
+#card-axial    .open-view-btn:not(:disabled) { border-color: rgba(0,212,170,0.45); color: var(--axial); }
+#card-sagittal .open-view-btn:not(:disabled) { border-color: rgba(255,107,157,0.45); color: var(--sagittal); }
+#card-coronal  .open-view-btn:not(:disabled) { border-color: rgba(124,92,255,0.45); color: var(--coronal); }
+
+.view-box-sep {
+  height: 1px;
+  margin: 0 12px;
+  background: var(--border);
+}
+
+.view-box-body {
+  padding: 10px 14px 12px;
+}
+.slice-row {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.slice-readout {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+.slice-slider {
+  width: 100%;
+  height: 22px;
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--muted);
+  opacity: 0.85;
+}
+.slice-slider:disabled {
+  cursor: not-allowed;
+  opacity: 0.35;
+}
+
+#card-axial:hover:not(.open)    { border-color: rgba(0,212,170,0.35); }
+#card-sagittal:hover:not(.open) { border-color: rgba(255,107,157,0.35); }
+#card-coronal:hover:not(.open)  { border-color: rgba(124,92,255,0.35); }
+
+#card-axial.open    { border-color: var(--axial);    background: rgba(0,212,170,0.09); box-shadow: 0 0 0 1px rgba(0,212,170,0.25); }
+#card-sagittal.open { border-color: var(--sagittal); background: rgba(255,107,157,0.09); box-shadow: 0 0 0 1px rgba(255,107,157,0.2); }
+#card-coronal.open  { border-color: var(--coronal);  background: rgba(124,92,255,0.09); box-shadow: 0 0 0 1px rgba(124,92,255,0.22); }
+
+#card-axial.open    .view-dot { background: var(--axial);    box-shadow: 0 0 8px var(--axial); }
+#card-sagittal.open .view-dot { background: var(--sagittal); box-shadow: 0 0 8px var(--sagittal); }
+#card-coronal.open  .view-dot { background: var(--coronal);  box-shadow: 0 0 8px var(--coronal); }
+
+#card-axial.open    .view-name { color: var(--axial); }
+#card-sagittal.open .view-name { color: var(--sagittal); }
+#card-coronal.open  .view-name { color: var(--coronal); }
+
+#card-axial.open    .slice-slider { accent-color: var(--axial); }
+#card-sagittal.open .slice-slider { accent-color: var(--sagittal); }
+#card-coronal.open  .slice-slider { accent-color: var(--coronal); }
+
+#card-axial.open    .view-state { color: var(--axial); }
+#card-sagittal.open .view-state { color: var(--sagittal); }
+#card-coronal.open  .view-state { color: var(--coronal); }

@@ -25,7 +25,6 @@ import {
   Enums,
   volumeLoader,
   setVolumesForViewports,
-  metaData,
   utilities,
   type Types,
 } from '@cornerstonejs/core';
@@ -35,8 +34,22 @@ import {
   registerDicomServiceWorker,
   evictDicomHttpCache,
   rebuildDicomHttpCache,
-  countDicomCacheEntries,
 } from './dicom-cache';
+import { getDicomCacheStatus } from './dicom-cache-status';
+import {
+  CACHE_BTN_CLEAR,
+  CACHE_BTN_REBUILD,
+  DASH_HINT_XR_PLAIN,
+  DASH_TITLE,
+} from './dashboard-copy';
+import { getDicomStudyMeta, type DicomStudyMeta } from './dicom-study-meta';
+import {
+  ORIENTATION_MAP,
+  PLANE_IDS,
+  VIEW_COLORS_HEX,
+  VIEW_LABELS,
+  type PlaneId,
+} from './viewer-planes';
 import { loadSession, saveSession } from './session';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -53,23 +66,8 @@ const DASH_W_M  = 0.72;   // dashboard width in scene (metres)
 const DASH_CW   = 1024;   // dashboard texture width (px)
 const DASH_CH   = 1180;   // dashboard texture height (px)
 
-const VIEW_COLORS_HEX: Record<string, string> = {
-  axial:    '#00d4aa',
-  sagittal: '#ff6b9d',
-  coronal:  '#7c5cff',
-};
-const VIEW_LABELS: Record<string, string> = {
-  axial: 'Axial', sagittal: 'Sagittal', coronal: 'Coronal',
-};
-
-const ORIENTATION_MAP: Record<string, Enums.OrientationAxis> = {
-  axial:    Enums.OrientationAxis.AXIAL,
-  sagittal: Enums.OrientationAxis.SAGITTAL,
-  coronal:  Enums.OrientationAxis.CORONAL,
-};
-
 // Spawn offsets relative to the dashboard (x, y, z)
-const SPAWN_OFFSETS: Record<string, [number, number, number]> = {
+const SPAWN_OFFSETS: Record<PlaneId, [number, number, number]> = {
   axial:    [-0.82, -0.10, -0.15],
   sagittal: [ 0.82, -0.10, -0.15],
   coronal:  [ 0,    0.82,  -0.15],
@@ -90,7 +88,7 @@ let gScrollAccum                      = 0;
 // Dashboard redraw state
 let gDashCtx:     CanvasRenderingContext2D | null = null;
 let gDashTexture: THREE.CanvasTexture | null      = null;
-let gDashMeta:    DicomMeta | null                = null;
+let gDashMeta:    DicomStudyMeta | null            = null;
 let gOpenViews:   Set<string> | null              = null;
 let gDashboardDirty                               = false;
 
@@ -105,7 +103,7 @@ let gXRCacheBusy         = false;
 let gXRRebuildImageIds: string[] = [];
 
 type ViewPanel = {
-  view:        'axial' | 'sagittal' | 'coronal';
+  view:        PlaneId;
   vpId:        string;
   domEl:       HTMLElement;
   panelCanvas: HTMLCanvasElement;
@@ -133,7 +131,7 @@ const gPanels = new Map<string, ViewPanel>();
 function getSliceStates(): Map<string, { current: number; total: number }> {
   const result = new Map<string, { current: number; total: number }>();
   if (!gRE) return result;
-  for (const view of ['axial', 'sagittal', 'coronal'] as const) {
+  for (const view of PLANE_IDS) {
     const panel = gPanels.get(view);
     if (!panel) continue;
     try {
@@ -146,7 +144,7 @@ function getSliceStates(): Map<string, { current: number; total: number }> {
 }
 
 async function handleSliderJump(
-  view: 'axial' | 'sagittal' | 'coronal',
+  view: PlaneId,
   fraction: number,
 ): Promise<void> {
   const panel = gPanels.get(view);
@@ -183,34 +181,16 @@ function xrCacheHideOverlay(): void {
 }
 
 async function refreshXRCacheStatus(): Promise<void> {
-  if (!('serviceWorker' in navigator) || !('caches' in window)) {
-    gXRCacheStatus = 'Offline file cache: not supported in this browser';
-    gXRCacheInteractable = false;
-    gDashboardDirty = true;
-    return;
-  }
-  try {
-    const n = await countDicomCacheEntries();
-    const on = !!navigator.serviceWorker.controller;
-    gXRCacheStatus = on
-      ? `Offline file cache: active · ${n} stored request(s)`
-      : `Offline file cache: installing… · ${n} stored request(s)`;
-    gXRCacheInteractable = true;
-  } catch {
-    gXRCacheStatus = 'Offline file cache: could not read status';
-  }
+  const s = await getDicomCacheStatus();
+  gXRCacheStatus = s.line;
+  gXRCacheInteractable = s.interactable;
   gDashboardDirty = true;
 }
 
 function initXRCache(imageIds: string[]): void {
   gXRRebuildImageIds = imageIds;
-  if (!('serviceWorker' in navigator)) {
-    gXRCacheStatus = 'Offline file cache: not supported in this browser';
-    gXRCacheInteractable = false;
-    gDashboardDirty = true;
-    return;
-  }
   void refreshXRCacheStatus();
+  if (!('serviceWorker' in navigator)) return;
   navigator.serviceWorker.addEventListener('controllerchange', () => {
     void refreshXRCacheStatus();
   });
@@ -376,22 +356,13 @@ function rrect(
   ctx.closePath();
 }
 
-type DicomMeta = {
-  patientName:      string;
-  studyDescription: string;
-  seriesDesc:       string;
-  modality:         string;
-  nSlices:          number;
-  matrix:           string;
-};
-
 type BtnRect = {
-  view: 'axial' | 'sagittal' | 'coronal';
+  view: PlaneId;
   x: number; y: number; w: number; h: number;
 };
 
 type SliderRect = {
-  view: 'axial' | 'sagittal' | 'coronal';
+  view: PlaneId;
   trackX: number; trackY: number; trackW: number; trackH: number;
 };
 
@@ -481,7 +452,7 @@ function drawPillButton(
  */
 function drawDashboard(
   ctx: CanvasRenderingContext2D,
-  meta: DicomMeta,
+  meta: DicomStudyMeta,
   openViews: Set<string>,
   sliceStates: Map<string, { current: number; total: number }>,
 ): DashRects {
@@ -520,7 +491,7 @@ function drawDashboard(
   ctx.font = 'bold 40px system-ui, sans-serif';
   ctx.textAlign = 'left';
   ctx.textBaseline = 'alphabetic';
-  ctx.fillText('DICOM Viewer', padX + 76, 58);
+  ctx.fillText(DASH_TITLE, padX + 76, 58);
 
   ctx.fillStyle = '#2a323d';
   ctx.fillRect(padX, hHeader - 1, W - padX * 2, 1);
@@ -558,11 +529,7 @@ function drawDashboard(
   yAfterMeta += 18;
   ctx.fillStyle = '#8a919b';
   ctx.font = 'italic 24px system-ui, sans-serif';
-  const hint =
-    'Use Open to open or close each plane as a floating panel. A service worker cache stores ' +
-    '/data/ responses the same as the 2D viewer. When a panel is open, use the slice slider ' +
-    'here, the thumbstick while pointing at the panel, or tap the track to jump.';
-  yAfterMeta = fillTextWrapped(ctx, hint, padX, yAfterMeta, W - padX * 2, 30, 'center');
+  yAfterMeta = fillTextWrapped(ctx, DASH_HINT_XR_PLAIN, padX, yAfterMeta, W - padX * 2, 30, 'center');
 
   // ── cache bar ──
   const cacheTop = yAfterMeta + 18;
@@ -585,16 +552,17 @@ function drawDashboard(
   );
 
   const cacheBtnH = 40;
-  const cacheBtnW1 = ctx.measureText('Clear file cache').width + 36;
-  const cacheBtnW2 = ctx.measureText('Clear & refetch series').width + 36;
+  ctx.font = 'bold 22px system-ui, sans-serif';
+  const cacheBtnW1 = ctx.measureText(CACHE_BTN_CLEAR).width + 36;
+  const cacheBtnW2 = ctx.measureText(CACHE_BTN_REBUILD).width + 36;
   const btnGap = 10;
   const cacheBtnY = Math.max(statusY + 10, cacheTop + cacheH - cacheBtnH - 14);
   let bx = cacheX + cacheW - 16 - cacheBtnW2 - btnGap - cacheBtnW1;
   const cacheBtnsOk = gXRCacheInteractable && !gXRCacheBusy;
   const clearBx = bx;
-  drawPillButton(ctx, clearBx, cacheBtnY, cacheBtnW1, cacheBtnH, 'Clear file cache', null, cacheBtnsOk);
+  drawPillButton(ctx, clearBx, cacheBtnY, cacheBtnW1, cacheBtnH, CACHE_BTN_CLEAR, null, cacheBtnsOk);
   bx += cacheBtnW1 + btnGap;
-  drawPillButton(ctx, bx, cacheBtnY, cacheBtnW2, cacheBtnH, 'Clear & refetch series', null, cacheBtnsOk);
+  drawPillButton(ctx, bx, cacheBtnY, cacheBtnW2, cacheBtnH, CACHE_BTN_REBUILD, null, cacheBtnsOk);
 
   const cacheBtnRects: CacheBtnRect[] = [];
   if (cacheBtnsOk) {
@@ -605,7 +573,6 @@ function drawDashboard(
   }
 
   // ── view cards (stacked, index-style) ──
-  const views = ['axial', 'sagittal', 'coronal'] as const;
   const boxX = padX;
   const boxW = W - padX * 2;
   const boxH = 172;
@@ -618,7 +585,7 @@ function drawDashboard(
   const openBtnRects: BtnRect[] = [];
   const sliderRects: SliderRect[] = [];
 
-  views.forEach((view, i) => {
+  PLANE_IDS.forEach((view, i) => {
     const by = boxesY0 + i * (boxH + boxGap);
     const isOpen = openViews.has(view);
     const col = VIEW_COLORS_HEX[view];
@@ -721,7 +688,7 @@ function drawDashboard(
 }
 
 /** Draws the coloured title-bar canvas for a view panel. */
-function makeHeaderCanvas(view: string): HTMLCanvasElement {
+function makeHeaderCanvas(view: PlaneId): HTMLCanvasElement {
   const c = document.createElement('canvas');
   c.width  = 512;
   c.height = 48;
@@ -827,7 +794,7 @@ function makeResizeHandleMesh(): THREE.Mesh {
 
 async function openViewPanel(
   world: World,
-  view: 'axial' | 'sagittal' | 'coronal',
+  view: PlaneId,
   dashMesh: THREE.Mesh,
 ): Promise<void> {
   if (gPanels.has(view) || !gRE) return;
@@ -931,7 +898,7 @@ async function openViewPanel(
   gPanels.set(view, panel);
 }
 
-function closeViewPanel(view: string): void {
+function closeViewPanel(view: PlaneId): void {
   const panel = gPanels.get(view);
   if (!panel) return;
 
@@ -954,20 +921,7 @@ async function createDashboard(
   imageId: string,
   nSlices: number,
 ): Promise<THREE.Mesh> {
-  // Gather DICOM metadata
-  const pm = metaData.get('patientModule',      imageId) ?? {};
-  const sm = metaData.get('generalStudyModule',  imageId) ?? {};
-  const se = metaData.get('generalSeriesModule', imageId) ?? {};
-  const px = metaData.get('imagePixelModule',    imageId) ?? {};
-
-  const meta: DicomMeta = {
-    patientName:      pm.patientName       ?? '—',
-    studyDescription: sm.studyDescription  ?? '—',
-    seriesDesc:       se.seriesDescription ?? '—',
-    modality:         se.modality          ?? 'CT',
-    nSlices,
-    matrix: px.columns && px.rows ? `${px.columns} × ${px.rows}` : '—',
-  };
+  const meta = getDicomStudyMeta(imageId, nSlices);
 
   // Store references so DicomSystem can redraw the dashboard
   gDashMeta   = meta;
@@ -1143,6 +1097,7 @@ async function main(): Promise<void> {
 
     await createDashboard(world, imageIds[0], imageIds.length);
 
+    document.getElementById('xr-root')?.classList.add('xr-scene-ready');
     hideOverlay();
   } catch (err) {
     console.error('[DICOM XR]', err);

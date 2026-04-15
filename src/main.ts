@@ -2,7 +2,6 @@ import {
   RenderingEngine,
   Enums,
   volumeLoader,
-  metaData,
   setVolumesForViewports,
   eventTarget,
   utilities,
@@ -15,29 +14,28 @@ import {
   registerDicomServiceWorker,
   evictDicomHttpCache,
   rebuildDicomHttpCache,
-  countDicomCacheEntries,
 } from './dicom-cache';
+import { getDicomCacheStatus } from './dicom-cache-status';
+import {
+  formatDicomMetaRowsHtml,
+  getDicomStudyMeta,
+} from './dicom-study-meta';
+import {
+  CACHE_BTN_CLEAR,
+  CACHE_BTN_REBUILD,
+  DASH_HINT_2D_HTML,
+  DASH_TITLE,
+} from './dashboard-copy';
+import { formatDashboardViewCardsHtml } from './dashboard-view-cards-html';
+import { ORIENTATION_MAP, PLANE_IDS, VIEW_LABELS, type PlaneId } from './viewer-planes';
 import { updateStatus, updateProgress, hideOverlay, showOverlay, showError } from './ui';
 
 const VOLUME_ID = 'cornerstoneStreamingImageVolume:dicomVolume';
 const RENDERING_ENGINE_ID = 'dicomRE';
 const VIEWPORT_ID = 'vp-main';
 
-const viewParam = new URLSearchParams(window.location.search).get('view') as
-  | 'axial'
-  | 'sagittal'
-  | 'coronal'
-  | null;
+const viewParam = new URLSearchParams(window.location.search).get('view') as PlaneId | null;
 const isViewer = viewParam !== null;
-
-const ORIENTATION_MAP: Record<string, Enums.OrientationAxis> = {
-  axial:    Enums.OrientationAxis.AXIAL,
-  sagittal: Enums.OrientationAxis.SAGITTAL,
-  coronal:  Enums.OrientationAxis.CORONAL,
-};
-
-const PLANE_IDS = ['axial', 'sagittal', 'coronal'] as const;
-type PlaneId = (typeof PLANE_IDS)[number];
 
 // ── Dashboard + popup viewers (BroadcastChannel — no shared Cornerstone heap) ─
 
@@ -117,31 +115,25 @@ function setupCacheControls(imageIds: string[]) {
   const clearBtn = document.getElementById('btn-cache-clear') as HTMLButtonElement | null;
   const rebuildBtn = document.getElementById('btn-cache-rebuild') as HTMLButtonElement | null;
 
-  async function refreshCacheStatusLine() {
-    if (!statusEl) return;
-    if (!('serviceWorker' in navigator) || !('caches' in window)) {
-      statusEl.textContent = 'Offline file cache: not supported in this browser';
-      return;
-    }
-    try {
-      const n = await countDicomCacheEntries();
-      const on = !!navigator.serviceWorker.controller;
-      statusEl.textContent = on
-        ? `Offline file cache: active · ${n} stored request(s)`
-        : `Offline file cache: installing… · ${n} stored request(s)`;
-    } catch {
-      statusEl.textContent = 'Offline file cache: could not read status';
-    }
-  }
+  if (clearBtn) clearBtn.textContent = CACHE_BTN_CLEAR;
+  if (rebuildBtn) rebuildBtn.textContent = CACHE_BTN_REBUILD;
 
-  if (!('serviceWorker' in navigator)) {
-    if (statusEl) statusEl.textContent = 'Offline file cache: not supported in this browser';
-    clearBtn?.setAttribute('disabled', '');
-    rebuildBtn?.setAttribute('disabled', '');
-    return;
+  async function refreshCacheStatusLine() {
+    const s = await getDicomCacheStatus();
+    if (statusEl) statusEl.textContent = s.line;
+    if (!s.interactable) {
+      clearBtn?.setAttribute('disabled', '');
+      rebuildBtn?.setAttribute('disabled', '');
+    } else {
+      clearBtn?.removeAttribute('disabled');
+      rebuildBtn?.removeAttribute('disabled');
+    }
+    return s.interactable;
   }
 
   void refreshCacheStatusLine();
+  if (!('serviceWorker' in navigator)) return;
+
   navigator.serviceWorker.addEventListener('controllerchange', () => {
     void refreshCacheStatusLine();
   });
@@ -162,7 +154,7 @@ function setupCacheControls(imageIds: string[]) {
 
   rebuildBtn?.addEventListener('click', async () => {
     if (clearBtn) clearBtn.disabled = true;
-    rebuildBtn.disabled = true;
+    rebuildBtn!.disabled = true;
     updateStatus('Rebuilding cache…', 'loading');
     showOverlay();
     try {
@@ -175,9 +167,19 @@ function setupCacheControls(imageIds: string[]) {
     } finally {
       hideOverlay();
       if (clearBtn) clearBtn.disabled = false;
-      rebuildBtn.disabled = false;
+      rebuildBtn!.disabled = false;
     }
   });
+}
+
+function applyDashboardChrome(): void {
+  const title = document.querySelector('.dash-title');
+  if (title) title.textContent = DASH_TITLE;
+  const hint = document.querySelector('.dash-hint');
+  if (hint) hint.innerHTML = DASH_HINT_2D_HTML;
+  const views = document.querySelector('.dash-views');
+  if (views) views.innerHTML = formatDashboardViewCardsHtml();
+  document.getElementById('main-content')?.classList.add('dashboard-ready');
 }
 
 async function runDashboard() {
@@ -199,6 +201,7 @@ async function runDashboard() {
     saveSession(result);
   }
 
+  applyDashboardChrome();
   populateInfo(imageIds[0], imageIds.length);
   setupViewCards(imageIds.length);
   setupCacheControls(imageIds);
@@ -209,7 +212,7 @@ async function runDashboard() {
 // ── Popup / standalone viewer (?view=) ──────────────────────────────────────
 
 async function runViewer(view: PlaneId) {
-  document.title = { axial: 'Axial', sagittal: 'Sagittal', coronal: 'Coronal' }[view];
+  document.title = VIEW_LABELS[view];
   document.body.classList.add('child-view');
   document.querySelector('header')!.style.display = 'none';
 
@@ -219,7 +222,7 @@ async function runViewer(view: PlaneId) {
   viewerContent.classList.add('full');
 
   const vpHeader = document.getElementById('vp-header')!;
-  vpHeader.textContent = { axial: 'Axial', sagittal: 'Sagittal', coronal: 'Coronal' }[view];
+  vpHeader.textContent = VIEW_LABELS[view];
   vpHeader.className = `vp-header ${view}`;
 
   document.getElementById('load-bar')?.classList.add('loading');
@@ -357,24 +360,6 @@ async function runViewer(view: PlaneId) {
 });
 
 function populateInfo(imageId: string, nSlices: number) {
-  const pm = metaData.get('patientModule', imageId) ?? {};
-  const sm = metaData.get('generalStudyModule', imageId) ?? {};
-  const se = metaData.get('generalSeriesModule', imageId) ?? {};
-  const px = metaData.get('imagePixelModule', imageId) ?? {};
-
-  const esc = (v: unknown) =>
-    String(v ?? '—').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-
-  const matrix = px.columns && px.rows ? `${px.columns} × ${px.rows}` : '—';
-  const row = (label: string, value: string) =>
-    `<div class="meta-row"><span class="meta-lbl">${label}</span><span class="meta-val">${esc(value)}</span></div>`;
-
-  document.getElementById('dicom-info')!.innerHTML = [
-    row('Patient', String(pm.patientName ?? '—')),
-    row('Study', String(sm.studyDescription ?? '—')),
-    row('Series', String(se.seriesDescription ?? '—')),
-    row('Modality', String(se.modality ?? '—')),
-    row('Slices', String(nSlices)),
-    row('Matrix', matrix),
-  ].join('');
+  const meta = getDicomStudyMeta(imageId, nSlices);
+  document.getElementById('dicom-info')!.innerHTML = formatDicomMetaRowsHtml(meta);
 }

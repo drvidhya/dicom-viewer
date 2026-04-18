@@ -345,6 +345,24 @@ async function runViewer(view: PlaneId) {
 
   const vpEl = document.getElementById(VIEWPORT_ID) as HTMLDivElement;
 
+  /** Positive delta moves forward through slices (same direction as wheel down). */
+  function stepSlices(deltaSteps: number) {
+    if (deltaSteps === 0) return;
+    const vport = renderingEngine.getViewport(VIEWPORT_ID) as Types.IVolumeViewport;
+    const cam = vport.getCamera();
+    const fp = cam.focalPoint!;
+    const n = cam.viewPlaneNormal!;
+    vport.setCamera({
+      focalPoint: [
+        fp[0] + n[0] * deltaSteps,
+        fp[1] + n[1] * deltaSteps,
+        fp[2] + n[2] * deltaSteps,
+      ],
+    });
+    vport.render();
+    postSliceSync();
+  }
+
   function postSliceSync() {
     try {
       const vport = renderingEngine.getViewport(VIEWPORT_ID) as Types.IVolumeViewport;
@@ -376,17 +394,73 @@ async function runViewer(view: PlaneId) {
 
   document.getElementById(VIEWPORT_ID)!.addEventListener('wheel', (e) => {
     e.preventDefault();
-    const vport = renderingEngine.getViewport(VIEWPORT_ID) as Types.IVolumeViewport;
-    const cam = vport.getCamera();
-    const delta = e.deltaY > 0 ? 1 : -1;
-    const fp = cam.focalPoint!;
-    const n = cam.viewPlaneNormal!;
-    vport.setCamera({
-      focalPoint: [fp[0] + n[0] * delta, fp[1] + n[1] * delta, fp[2] + n[2] * delta],
-    });
-    vport.render();
-    postSliceSync();
+    stepSlices(e.deltaY > 0 ? 1 : -1);
   }, { passive: false });
+
+  /**
+   * Drag: pointer position maps linearly across the window — (0,0) to bottom-right
+   * spans all slices. Uses (clientX + clientY) / (innerWidth + innerHeight) so a
+   * drag from the top-left corner to the opposite corner covers the full range.
+   */
+  let dragPointerId: number | null = null;
+  let lastDragMappedIndex = -1;
+
+  function windowDragSpanPx(): number {
+    return Math.max(1, window.innerWidth + window.innerHeight);
+  }
+
+  function sliceIndexFromWindowClient(clientX: number, clientY: number, numSteps: number): number | null {
+    if (numSteps <= 1) return null;
+    const span = windowDragSpanPx();
+    const t = Math.max(0, Math.min(1, (clientX + clientY) / span));
+    const maxIdx = numSteps - 1;
+    return Math.max(0, Math.min(maxIdx, Math.round(t * maxIdx)));
+  }
+
+  function applyDragSliceIfChanged(clientX: number, clientY: number) {
+    let numSteps: number;
+    try {
+      const vport = renderingEngine.getViewport(VIEWPORT_ID) as Types.IVolumeViewport;
+      numSteps = utilities.getVolumeViewportScrollInfo(vport, VOLUME_ID).numScrollSteps;
+    } catch {
+      return;
+    }
+    const clamped = sliceIndexFromWindowClient(clientX, clientY, numSteps);
+    if (clamped === null || clamped === lastDragMappedIndex) return;
+    lastDragMappedIndex = clamped;
+    void utilities.jumpToSlice(vpEl, { imageIndex: clamped, volumeId: VOLUME_ID })
+      .then(() => {
+        renderingEngine.renderViewports([VIEWPORT_ID]);
+        postSliceSync();
+      })
+      .catch((err) => console.warn('[viewer] jumpToSlice drag', err));
+  }
+
+  vpEl.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    dragPointerId = e.pointerId;
+    lastDragMappedIndex = -1;
+    vpEl.setPointerCapture(e.pointerId);
+    applyDragSliceIfChanged(e.clientX, e.clientY);
+  });
+
+  vpEl.addEventListener('pointermove', (e) => {
+    if (dragPointerId !== e.pointerId) return;
+    applyDragSliceIfChanged(e.clientX, e.clientY);
+  });
+
+  function endSliceDrag(e: PointerEvent) {
+    if (dragPointerId !== e.pointerId) return;
+    dragPointerId = null;
+    lastDragMappedIndex = -1;
+    try {
+      vpEl.releasePointerCapture(e.pointerId);
+    } catch {
+      /* not captured */
+    }
+  }
+  vpEl.addEventListener('pointerup', endSliceDrag);
+  vpEl.addEventListener('pointercancel', endSliceDrag);
 
   viewChannel.postMessage({ type: 'opened', view } satisfies ViewMsg);
   postSliceSync();

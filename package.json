@@ -11,7 +11,8 @@
     "gen:manifest": "node src/scripts/generate-dicom-manifest.mjs",
     "build": "rimraf dist && tsc && vite build --config vite/vite.config.ts",
     "preview": "vite preview --config vite/vite.config.ts",
-    "preview:host": "vite preview --config vite/vite.config.ts --host 0.0.0.0 --port 4173"
+    "preview:host": "vite preview --config vite/vite.config.ts --host 0.0.0.0 --port 4173",
+    "glb-gallery": "npx --yes serve glb -p 8765"
   },
   "dependencies": {
     "@cornerstonejs/core": "^2.0.0",

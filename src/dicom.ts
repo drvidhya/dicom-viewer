@@ -3,12 +3,13 @@ import { imageLoader, metaData } from '@cornerstonejs/core';
 /**
  * Directory URL for manifest + slices.
  *
- * Default: **`dicom/data/`** resolved relative to **`location.href`**, so the dataset sits beside
- * `index.html` / `xr.html` under any path prefix. On a dev server opened at `/`, that resolves to the
- * same URL Vite serves via middleware at **`/dicom/data/`**. The build does not copy DICOM.
+ * Default: **`dicom/data/`** under the app’s Vite **`import.meta.env.BASE_URL`** (site root in dev),
+ * so it always matches the middleware mount **`/dicom/data/`** even when the current document is under
+ * **`/glb/`** or another subpath (resolving against `location.href` alone would incorrectly yield
+ * **`/glb/dicom/data/`** and return HTML instead of JSON).
  *
- * **Override:** `VITE_DICOM_DATA_BASE` — path relative to the current document (a leading `/` is
- * stripped so the base is never forced to the site root), or a full `http(s)` URL for another host.
+ * **Override:** `VITE_DICOM_DATA_BASE` — full `http(s)` URL, or a path joined to `location.origin`
+ * (leading `/` optional).
  */
 export function getDicomDataDirUrl(): URL {
   const envRaw = import.meta.env.VITE_DICOM_DATA_BASE?.trim();
@@ -18,10 +19,14 @@ export function getDicomDataDirUrl(): URL {
     }
     const path = envRaw.replace(/^\/+/, '');
     const withSlash = path.endsWith('/') ? path : `${path}/`;
-    return new URL(withSlash, window.location.href);
+    return new URL(withSlash, window.location.origin);
   }
 
-  return new URL('dicom/data/', window.location.href);
+  const base = import.meta.env.BASE_URL ?? '/';
+  const root =
+    !base || base === './' ? '/' : base.startsWith('/') ? base : `/${base}`;
+  const withSlash = root.endsWith('/') ? root : `${root}/`;
+  return new URL('dicom/data/', new URL(withSlash, window.location.origin));
 }
 
 const DICOM_DATA_PATH_MARKER = 'dicom/data/';

@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
+    />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <title>GLB gallery — WebXR</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #121418;
+        --panel: #1c2028;
+        --border: #2a3140;
+        --text: #e8eaed;
+        --muted: #9aa0a6;
+        --accent: #7cb3ff;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+        background: var(--bg);
+        color: var(--text);
+      }
+      #canvas-wrap {
+        position: fixed;
+        inset: 0;
+      }
+      canvas {
+        display: block;
+        width: 100%;
+        height: 100%;
+      }
+      #panel {
+        position: fixed;
+        top: 12px;
+        left: 12px;
+        width: min(320px, calc(100vw - 24px));
+        max-height: min(70vh, 520px);
+        overflow: auto;
+        padding: 14px 16px;
+        background: color-mix(in srgb, var(--panel) 92%, transparent);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        backdrop-filter: blur(10px);
+        z-index: 10;
+        font-size: 14px;
+      }
+      #panel h1 {
+        margin: 0 0 10px;
+        font-size: 16px;
+        font-weight: 600;
+      }
+      #panel p {
+        margin: 8px 0 0;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.45;
+      }
+      ul {
+        list-style: none;
+        margin: 10px 0 0;
+        padding: 0;
+      }
+      li {
+        margin: 0;
+        border-top: 1px solid var(--border);
+      }
+      li:first-child {
+        border-top: none;
+      }
+      li button {
+        width: 100%;
+        text-align: left;
+        padding: 10px 8px;
+        border: none;
+        background: transparent;
+        color: var(--text);
+        cursor: pointer;
+        border-radius: 6px;
+        font-size: 13px;
+      }
+      li button:hover,
+      li button:focus-visible {
+        background: color-mix(in srgb, var(--accent) 18%, transparent);
+        outline: none;
+      }
+      li button.active {
+        color: var(--accent);
+        font-weight: 600;
+      }
+      #status {
+        margin-top: 10px !important;
+        font-family: ui-monospace, monospace;
+        font-size: 11px !important;
+        word-break: break-all;
+      }
+      #xr-slot {
+        position: fixed;
+        bottom: max(12px, env(safe-area-inset-bottom));
+        left: 50%;
+        transform: translateX(-50%);
+        right: auto;
+        z-index: 20;
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 10px;
+        width: min(420px, calc(100vw - 24px));
+      }
+      #xr-slot a,
+      #xr-slot button {
+        font: inherit;
+        padding: 14px 20px;
+        border-radius: 10px;
+        border: 1px solid var(--border);
+        background: var(--panel);
+        color: var(--text);
+        cursor: pointer;
+        text-decoration: none;
+        text-align: center;
+        font-size: 16px;
+        font-weight: 600;
+        min-height: 48px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        -webkit-tap-highlight-color: transparent;
+        touch-action: manipulation;
+      }
+      #xr-slot a:hover,
+      #xr-slot button:hover {
+        border-color: var(--accent);
+      }
+      body.xr-presenting #panel {
+        display: none;
+      }
+      body.xr-presenting #xr-slot {
+        display: none;
+      }
+    </style>
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://unpkg.com/three@0.177.0/build/three.module.js",
+          "three/addons/": "https://unpkg.com/three@0.177.0/examples/jsm/"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <div id="canvas-wrap"></div>
+    <aside id="panel">
+      <h1>GLB files</h1>
+      <p>
+        <strong>Quest:</strong> HTTPS URL, pick a GLB, <strong>Enter VR</strong>. Thumbsticks rotate the
+        model. In VR, mesh height/width match <strong>75% of the 0.65 m XR view panels</strong> (see
+        <code>xr-main.ts</code>). Entries under <code>dicom/data</code> load from
+        <code>/dicom/data/…</code>.
+      </p>
+      <ul id="list"></ul>
+      <p id="status">Loading list…</p>
+    </aside>
+    <div id="xr-slot"></div>
+
+    <script type="module">
+      import * as THREE from 'three';
+      import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+      import { VRButton } from 'three/addons/webxr/VRButton.js';
+      import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+      /** If manifest is missing; omit huge GLBs that routinely fail in-browser (OOM / timeout). */
+      const FALLBACK_FILES = [
+        'auto-test.glb',
+        'data.glb',
+        'debug-lite.glb',
+        '/dicom/data/web-preview.glb',
+      ];
+
+      /** Skip loading GLBs larger than this in the gallery (Quest / mobile browsers). */
+      const MAX_BROWSER_GLB_BYTES = 85 * 1024 * 1024;
+
+      const listEl = document.getElementById('list');
+      const statusEl = document.getElementById('status');
+      const canvasWrap = document.getElementById('canvas-wrap');
+      const xrSlot = document.getElementById('xr-slot');
+
+      /**
+       * Directory URL for this gallery (always ends with /).
+       * Without this, `new URL('foo.glb', 'https://host/glb')` resolves to `/foo.glb` instead of `/glb/foo.glb`.
+       */
+      function getGalleryBaseUrl() {
+        const u = new URL(window.location.href);
+        let p = u.pathname;
+        if (!p.endsWith('/')) {
+          if (p.endsWith('.html')) {
+            p = p.slice(0, p.lastIndexOf('/') + 1);
+          } else {
+            p = `${p}/`;
+          }
+        }
+        return `${u.origin}${p}`;
+      }
+
+      /** Absolute path from site root (e.g. /dicom/data/foo.glb) or filename relative to /glb/. */
+      function resolveAssetUrl(spec) {
+        if (spec.startsWith('/')) {
+          return new URL(spec, window.location.origin).href;
+        }
+        return new URL(spec, getGalleryBaseUrl()).href;
+      }
+
+      const scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x121418);
+
+      const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.01, 500);
+      camera.position.set(0, 1.2, 2.5);
+
+      const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.outputColorSpace = THREE.SRGBColorSpace;
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      renderer.toneMappingExposure = 1;
+      renderer.xr.enabled = true;
+      // Quest / immersive VR: floor-aligned space so the scene is stable in full VR.
+      renderer.xr.setReferenceSpaceType('local-floor');
+      canvasWrap.appendChild(renderer.domElement);
+
+      const controls = new OrbitControls(camera, renderer.domElement);
+      controls.enableDamping = true;
+      controls.dampingFactor = 0.06;
+      controls.target.set(0, 0, 0);
+
+      scene.add(new THREE.AmbientLight(0xffffff, 0.45));
+      const key = new THREE.DirectionalLight(0xffffff, 1.1);
+      key.position.set(3, 8, 5);
+      scene.add(key);
+      const fill = new THREE.DirectionalLight(0xaaccff, 0.35);
+      fill.position.set(-4, 2, -6);
+      scene.add(fill);
+
+      // Stage holds the asset; offset in VR so the mesh sits in front of the user (full immersive).
+      const stageGroup = new THREE.Group();
+      scene.add(stageGroup);
+      const modelRoot = new THREE.Group();
+      stageGroup.add(modelRoot);
+
+      /**
+       * Match src/xr-main.ts view panels (PANEL_W / PANEL_H = 0.65 m).
+       * In XR, the GLB’s largest axis is scaled to this fraction of that panel edge.
+       */
+      const XR_VIEWPORT_PANEL_M = 0.65;
+      const XR_MODEL_VS_PANEL = 0.75;
+      const DESKTOP_FIT_TARGET_M = 1.8;
+
+      /** Immersive: place stage in front of the user; model scale is set on modelRoot (see fitAndFrame). */
+      const VR_VIEW = {
+        distanceZ: -2.35,
+        heightY: 1.32,
+      };
+
+      function applyImmersiveLayout() {
+        if (!renderer.xr.isPresenting) return;
+        stageGroup.position.set(0, VR_VIEW.heightY, VR_VIEW.distanceZ);
+        stageGroup.scale.set(1, 1, 1);
+      }
+
+      function clearImmersiveLayout() {
+        stageGroup.position.set(0, 0, 0);
+        stageGroup.scale.set(1, 1, 1);
+      }
+
+      const loader = new GLTFLoader();
+      let currentUrl = '';
+      let activeButton = null;
+
+      /** Unscaled bbox max extent after centering (meters); used to swap desktop vs XR target size. */
+      let modelBaseMaxDim = null;
+
+      function setStatus(text) {
+        statusEl.textContent = text;
+      }
+
+      function fitTargetMeters() {
+        return renderer.xr.isPresenting
+          ? XR_VIEWPORT_PANEL_M * XR_MODEL_VS_PANEL
+          : DESKTOP_FIT_TARGET_M;
+      }
+
+      function applyModelScaleFromBase() {
+        if (modelBaseMaxDim == null || modelBaseMaxDim <= 0) return;
+        modelRoot.scale.setScalar(fitTargetMeters() / modelBaseMaxDim);
+      }
+
+      function fitAndFrame(object) {
+        const box = new THREE.Box3().setFromObject(object);
+        if (box.isEmpty()) return;
+        const center = box.getCenter(new THREE.Vector3());
+        const size = box.getSize(new THREE.Vector3());
+        object.position.sub(center);
+        const maxDim = Math.max(size.x, size.y, size.z, 0.001);
+        modelBaseMaxDim = maxDim;
+        applyModelScaleFromBase();
+        refitDesktopCamera();
+      }
+
+      function refitDesktopCamera() {
+        if (renderer.xr.isPresenting) return;
+        const box = new THREE.Box3().setFromObject(modelRoot);
+        if (box.isEmpty()) return;
+        const size = box.getSize(new THREE.Vector3());
+        const maxDim = Math.max(size.x, size.y, size.z, 0.001);
+        const dist = Math.max(2, maxDim * 1.8);
+        camera.near = Math.max(0.001, dist / 200);
+        camera.far = dist * 50;
+        camera.updateProjectionMatrix();
+        camera.position.set(0, maxDim * 0.35, dist);
+        controls.target.set(0, 0, 0);
+        controls.update();
+      }
+
+      function clearModel() {
+        modelBaseMaxDim = null;
+        while (modelRoot.children.length) {
+          const o = modelRoot.children[0];
+          modelRoot.remove(o);
+          o.traverse((c) => {
+            if (c.geometry) c.geometry.dispose();
+            if (c.material) {
+              const mats = Array.isArray(c.material) ? c.material : [c.material];
+              mats.forEach((m) => {
+                if (m.map) m.map.dispose();
+                m.dispose?.();
+              });
+            }
+          });
+        }
+      }
+
+      function loadGlb(name) {
+        const url = resolveAssetUrl(name);
+        currentUrl = name;
+        setStatus(`Loading ${name}…`);
+        clearModel();
+        loader.load(
+          url,
+          (gltf) => {
+            modelRoot.add(gltf.scene);
+            fitAndFrame(modelRoot);
+            applyImmersiveLayout();
+            setStatus(`Loaded ${name}`);
+          },
+          undefined,
+          (err) => {
+            console.error(err);
+            const msg = err?.message || String(err);
+            setStatus(
+              `Error: ${name} — ${msg}. If this is a very large GLB, try a smaller export or desktop.`,
+            );
+          },
+        );
+      }
+
+      function listLabelForSpec(spec) {
+        const base = spec.includes('/') ? spec.split('/').pop() : spec;
+        return spec.startsWith('/dicom/data/') ? `${base} (dicom/data)` : base;
+      }
+
+      async function buildList(files) {
+        listEl.innerHTML = '';
+        const sorted = [...files]
+          .filter((f) => f.toLowerCase().endsWith('.glb'))
+          .sort((a, b) => a.localeCompare(b));
+        let loadable = 0;
+        for (const name of sorted) {
+          const li = document.createElement('li');
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.textContent = listLabelForSpec(name);
+          btn.dataset.file = name;
+
+          let tooBig = false;
+          let bytes = null;
+          try {
+            const head = await fetch(resolveAssetUrl(name), { method: 'HEAD' });
+            const cl = head.headers.get('content-length');
+            if (cl) {
+              bytes = parseInt(cl, 10);
+              if (bytes > MAX_BROWSER_GLB_BYTES) tooBig = true;
+            }
+          } catch (_) {
+            /* HEAD optional */
+          }
+
+          if (tooBig) {
+            btn.disabled = true;
+            btn.textContent = `${name} (~${Math.round(bytes / 1e6)} MB — too large for VR browser)`;
+            btn.title = `Over ${Math.round(MAX_BROWSER_GLB_BYTES / 1e6)} MB; load may fail or freeze.`;
+          } else {
+            loadable += 1;
+          }
+
+          btn.addEventListener('click', () => {
+            if (btn.disabled) return;
+            if (activeButton) activeButton.classList.remove('active');
+            btn.classList.add('active');
+            activeButton = btn;
+            loadGlb(name);
+          });
+          li.appendChild(btn);
+          listEl.appendChild(li);
+        }
+        setStatus(`${loadable} loadable, ${sorted.length - loadable} skipped (size). Pick one.`);
+        const first = listEl.querySelector('button:not([disabled])');
+        if (first) first.click();
+      }
+
+      async function initList() {
+        try {
+          const manifestUrl = new URL('manifest.json', getGalleryBaseUrl()).href;
+          const res = await fetch(manifestUrl, { cache: 'no-store' });
+          if (res.ok) {
+            const text = await res.text();
+            let data;
+            try {
+              data = JSON.parse(text);
+            } catch (e) {
+              setStatus(`manifest.json is not valid JSON (got HTML or wrong URL?). Using built-in list.`);
+              await buildList(FALLBACK_FILES);
+              return;
+            }
+            const files = Array.isArray(data.files) ? data.files : data;
+            await buildList(files);
+            return;
+          }
+        } catch (_) {
+          /* use fallback */
+        }
+        setStatus('manifest.json missing or blocked — using built-in list.');
+        await buildList(FALLBACK_FILES);
+      }
+
+      renderer.xr.addEventListener('sessionstart', () => {
+        document.body.classList.add('xr-presenting');
+        controls.enabled = false;
+        applyModelScaleFromBase();
+        applyImmersiveLayout();
+      });
+      renderer.xr.addEventListener('sessionend', () => {
+        document.body.classList.remove('xr-presenting');
+        controls.enabled = true;
+        clearImmersiveLayout();
+        applyModelScaleFromBase();
+        refitDesktopCamera();
+        setTimeout(polishQuestVRButton, 0);
+      });
+
+      const vrBtn = VRButton.createButton(renderer);
+      xrSlot.appendChild(vrBtn);
+
+      function polishQuestVRButton() {
+        vrBtn.style.position = 'relative';
+        vrBtn.style.left = 'auto';
+        vrBtn.style.bottom = 'auto';
+        vrBtn.style.width = '100%';
+        vrBtn.style.zIndex = 'auto';
+        vrBtn.style.opacity = '1';
+        vrBtn.style.padding = '14px 20px';
+        vrBtn.style.fontSize = '16px';
+        vrBtn.style.fontWeight = '600';
+        if (vrBtn.textContent === 'ENTER VR') {
+          vrBtn.textContent = 'Enter VR (full immersive)';
+        }
+      }
+      [0, 200, 800].forEach((ms) => setTimeout(polishQuestVRButton, ms));
+
+      function applyXRThumbstickRotation() {
+        if (!renderer.xr.isPresenting) return;
+        const session = renderer.xr.getSession();
+        if (!session) return;
+        for (const src of session.inputSources) {
+          const gp = src.gamepad;
+          if (!gp || !gp.axes || gp.axes.length === 0) continue;
+          let rx = 0;
+          let ry = 0;
+          if (gp.axes.length >= 4) {
+            rx = gp.axes[2] ?? 0;
+            ry = gp.axes[3] ?? 0;
+          } else {
+            rx = gp.axes[0] ?? 0;
+            ry = gp.axes[1] ?? 0;
+          }
+          const dead = 0.15;
+          if (Math.abs(rx) < dead && Math.abs(ry) < dead) continue;
+          modelRoot.rotation.y -= rx * 0.07;
+          modelRoot.rotation.x += ry * 0.07;
+        }
+      }
+
+      renderer.setAnimationLoop(() => {
+        applyXRThumbstickRotation();
+        if (controls.enabled) controls.update();
+        renderer.render(scene, camera);
+      });
+
+      window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+      });
+
+      initList();
+    </script>
+  </body>
+</html>

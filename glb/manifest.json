@@ -1,0 +1,9 @@
+{
+  "files": [
+    "auto-test.glb",
+    "data.glb",
+    "debug-lite.glb",
+    "/dicom/data/web-preview.glb"
+  ],
+  "comment": "Use /dicom/data/... for GLBs stored next to DICOM slices. Glb/ folder holds smaller test assets."
+}

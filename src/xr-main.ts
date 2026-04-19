@@ -8,18 +8,21 @@
  *     `THREE.CanvasTexture` that textures a grabbable panel mesh.
  *   • Dashboard panel (canvas-drawn): same layout as index.html — metadata, hint,
  *     cache bar, view cards with Open + slice slider (raycast hit targets).
- *   • View panels (Axial / Sagittal / Coronal): appear when the box is tapped
- *     and can be grabbed/repositioned.  Thumbstick Y scrolls through slices.
+ *   • View panels (Axial / Sagittal / Coronal): default-open on a shallow horizontal
+ *     arc in front of the user (each faces the head).  Grabbable; thumbstick Y scrolls slices.
+ *   • Isosurface GLB: centered near the layout; two-hand grab for move + rotate (scale off).
  */
 
 import {
   World,
   OneHandGrabbable,
+  TwoHandsGrabbable,
   Interactable,
   createSystem,
   SessionMode,
 } from '@iwsdk/core';
 import * as THREE from 'three';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import {
   RenderingEngine,
   Enums,
@@ -31,6 +34,7 @@ import {
 import { initCornerstone } from './cornerstone';
 import {
   ctVoiCallback,
+  getDicomDataDirUrl,
   getVoiFromMetadata,
   imageIdsReadyForVolume,
   loadFromManifest,
@@ -65,6 +69,10 @@ const RE_ID     = 'xr-re';
 
 const PANEL_W    = 0.65;  // viewport panel width  (metres)
 const PANEL_H    = 0.65;  // viewport panel height (metres)
+/** Longest axis of the isosurface after scaling — strictly smaller than a viewport panel. */
+const GLB_PREVIEW_MAX_AXIS_M = Math.min(PANEL_W, PANEL_H) * 0.4;
+const GLB_PREVIEW_DEFAULT = 'web-preview.glb';
+const GLB_GRAB_HIT_RADIUS_M = GLB_PREVIEW_MAX_AXIS_M * 0.75;
 const HEADER_H   = 0.065; // title-bar height      (metres)
 const CANVAS_PX  = 512;   // Cornerstone canvas pixel size
 
@@ -76,12 +84,43 @@ const DASH_H_METRES = DASH_W_M * (DASH_CH / DASH_CW);
 const VIEW_HEADER_PX_W = 512;
 const VIEW_HEADER_PX_H = 48;
 
-// Spawn offsets relative to the dashboard (x, y, z)
-const SPAWN_OFFSETS: Record<PlaneId, [number, number, number]> = {
-  axial:    [-0.82, -0.10, -0.15],
-  sagittal: [ 0.82, -0.10, -0.15],
-  coronal:  [ 0,    0.82,  -0.15],
+/** Panels rotate to face this point (standing head height). */
+const PANEL_LOOK_TARGET = new THREE.Vector3(0, 1.34, 0);
+
+/**
+ * Horizontal arc in XZ: circle center sits a bit closer to the user; panels rest on
+ * the rim bulging toward -Z so they form a curve instead of stacking.
+ */
+const PANEL_ARC_CENTER = new THREE.Vector3(0, 1.32, -0.56);
+const PANEL_ARC_RADIUS = 1.02;
+/** Degrees on the arc from centerline (0 = straight ahead; same as coronal). */
+const VIEW_ARC_ANGLE_DEG: Record<PlaneId, number> = {
+  coronal: 0,
+  sagittal: 48,
+  axial: -48,
 };
+
+/** Vertical gap between coronal panel top and dashboard bottom (metres). */
+const DASH_GAP_ABOVE_CORONAL_M = 0.06;
+
+/** Isosurface GLB: between user and arc, centered in X. */
+const GLB_PREVIEW_POS = new THREE.Vector3(0, 1.28, -1.12);
+
+/** Point on the arc at `deg`; sets `out` to (x, arc deck y, z). */
+function arcPointAtAngleDeg(deg: number, out: THREE.Vector3): void {
+  const rad = (deg * Math.PI) / 180;
+  const r = PANEL_ARC_RADIUS;
+  out.set(
+    PANEL_ARC_CENTER.x + r * Math.sin(rad),
+    PANEL_ARC_CENTER.y,
+    PANEL_ARC_CENTER.z - r * Math.cos(rad),
+  );
+}
+
+function placePanelOnArc(group: THREE.Object3D, view: PlaneId): void {
+  arcPointAtAngleDeg(VIEW_ARC_ANGLE_DEG[view], group.position);
+  group.lookAt(PANEL_LOOK_TARGET);
+}
 
 type CacheBtnRect = {
   action: 'clear' | 'rebuild';
@@ -894,11 +933,7 @@ function makeResizeHandleMesh(): THREE.Mesh {
 
 // ── View panel factory ────────────────────────────────────────────────────────
 
-async function openViewPanel(
-  world: World,
-  view: PlaneId,
-  dashMesh: THREE.Mesh,
-): Promise<void> {
+async function openViewPanel(world: World, view: PlaneId): Promise<void> {
   if (gPanels.has(view) || !gRE) return;
 
   // ── Cornerstone hidden element ──
@@ -960,10 +995,8 @@ async function openViewPanel(
   group.add(viewportMesh);
   group.add(headerMesh);
 
-  const dashPos   = dashMesh.getWorldPosition(new THREE.Vector3());
-  const [ox, oy, oz] = SPAWN_OFFSETS[view];
-  const spawnPos  = new THREE.Vector3(dashPos.x + ox, dashPos.y + oy, dashPos.z + oz);
-  group.position.copy(spawnPos);
+  placePanelOnArc(group, view);
+  const spawnPos = group.position.clone();
 
   // ── Main panel entity: Interactable only (no grab — handle only) ──
   const entity = world.createTransformEntity(group);
@@ -973,8 +1006,11 @@ async function openViewPanel(
   // ── Drag handle (center top) — the ONLY grabbable move target on the panel ──
   const col              = VIEW_COLORS_HEX[view];
   const dragHandleMesh   = makeDragHandleMesh(col);
-  const initDragPos      = spawnPos.clone().add(DRAG_HANDLE_OFFSET);
+  const initDragPos      = spawnPos.clone().add(
+    DRAG_HANDLE_OFFSET.clone().applyQuaternion(group.quaternion),
+  );
   dragHandleMesh.position.copy(initDragPos);
+  dragHandleMesh.quaternion.copy(group.quaternion);
   const dragHandleEntity = world.createTransformEntity(dragHandleMesh);
   dragHandleEntity.addComponent(Interactable, {});
   dragHandleEntity.addComponent(OneHandGrabbable, {});
@@ -982,8 +1018,11 @@ async function openViewPanel(
 
   // ── Resize handle (bottom-right) ──
   const resizeHandleMesh   = makeResizeHandleMesh();
-  const initResizePos      = spawnPos.clone().add(RESIZE_HANDLE_OFFSET);
+  const initResizePos      = spawnPos.clone().add(
+    RESIZE_HANDLE_OFFSET.clone().applyQuaternion(group.quaternion),
+  );
   resizeHandleMesh.position.copy(initResizePos);
+  resizeHandleMesh.quaternion.copy(group.quaternion);
   const resizeHandleEntity = world.createTransformEntity(resizeHandleMesh);
   resizeHandleEntity.addComponent(Interactable, {});
   resizeHandleEntity.addComponent(OneHandGrabbable, {});
@@ -1057,7 +1096,12 @@ async function createDashboard(
     new THREE.PlaneGeometry(DASH_W_M, dashHMetres),
     new THREE.MeshBasicMaterial({ map: texture, side: THREE.DoubleSide }),
   );
-  mesh.position.set(0, 1.5, -1.7);
+  // Same XZ as coronal (center of the arc); above coronal with matching tilt.
+  arcPointAtAngleDeg(VIEW_ARC_ANGLE_DEG.coronal, mesh.position);
+  const coronalTopApprox =
+    PANEL_ARC_CENTER.y + PANEL_H / 2 + HEADER_H + DASH_GAP_ABOVE_CORONAL_M;
+  mesh.position.y = coronalTopApprox + dashHMetres / 2;
+  mesh.lookAt(PANEL_LOOK_TARGET);
 
   gDashMeshRef = mesh;
 
@@ -1109,7 +1153,7 @@ async function createDashboard(
           gOpenViews!.delete(view);
           closeViewPanel(view);
         } else {
-          await openViewPanel(world, view, mesh);
+          await openViewPanel(world, view);
           gOpenViews!.add(view);
         }
         gDashboardDirty = true;
@@ -1130,6 +1174,75 @@ async function createDashboard(
   });
 
   return mesh;
+}
+
+function glbFileFromQuery(): string {
+  const raw = new URLSearchParams(window.location.search).get('glb');
+  if (!raw?.trim()) return GLB_PREVIEW_DEFAULT;
+  const base = raw.split(/[/\\]/).pop() ?? GLB_PREVIEW_DEFAULT;
+  return base.length > 0 ? base : GLB_PREVIEW_DEFAULT;
+}
+
+function brightenGltfMaterials(root: THREE.Object3D): void {
+  root.traverse((obj) => {
+    if (!(obj instanceof THREE.Mesh)) return;
+    const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+    for (const mat of mats) {
+      if (
+        mat instanceof THREE.MeshStandardMaterial ||
+        mat instanceof THREE.MeshPhysicalMaterial
+      ) {
+        mat.roughness = THREE.MathUtils.clamp(mat.roughness * 0.82, 0, 1);
+        mat.envMapIntensity = (mat.envMapIntensity ?? 1) * 1.35;
+      }
+    }
+  });
+}
+
+/**
+ * Loads a lightweight GLB isosurface near the layout center (same asset as the GLB gallery).
+ * Grabbable with one hand. Failure is non-fatal — volume slices still work without it.
+ */
+async function loadWebPreviewGlb(world: World): Promise<void> {
+  const url = new URL(glbFileFromQuery(), getDicomDataDirUrl()).href;
+  const loader = new GLTFLoader();
+  let gltf: Awaited<ReturnType<GLTFLoader['loadAsync']>>;
+  try {
+    gltf = await loader.loadAsync(url);
+  } catch (e) {
+    console.warn('[DICOM XR] GLB preview not loaded:', url, e);
+    return;
+  }
+
+  const root = gltf.scene;
+  brightenGltfMaterials(root);
+
+  root.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(root, true);
+  const size = box.getSize(new THREE.Vector3());
+  const center = box.getCenter(new THREE.Vector3());
+  root.position.sub(center);
+  const maxDim = Math.max(size.x, size.y, size.z, 1e-6);
+  root.scale.setScalar(GLB_PREVIEW_MAX_AXIS_M / maxDim);
+
+  // Invisible sphere is the grab/rotate handle; GLB follows as its child.
+  const grabHandle = new THREE.Mesh(
+    new THREE.SphereGeometry(GLB_GRAB_HIT_RADIUS_M, 18, 14),
+    new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false }),
+  );
+  grabHandle.position.copy(GLB_PREVIEW_POS);
+  grabHandle.add(root);
+
+  const entity = world.createTransformEntity(grabHandle);
+  entity.addComponent(Interactable, {});
+  // Two-hand handle: reliable rotation (line between hands + wrist roll). One-hand is mostly translation.
+  entity.addComponent(TwoHandsGrabbable, {
+    translate: true,
+    rotate: true,
+    scale: false,
+  });
+  // Ensure controller rays can target this entity.
+  (entity.object3D as any).pointerEventsType = 'all';
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -1215,14 +1328,21 @@ async function main(): Promise<void> {
     // Ambient + directional lights so IWSDK's AnimatedController / AnimatedHand
     // glTF models render with correct colour. Our DICOM panels use MeshBasicMaterial
     // and are unaffected by scene lighting.
-    world.scene.add(new THREE.AmbientLight(0xffffff, 1.5));
-    const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
-    dirLight.position.set(0, 2, 2);
-    world.scene.add(dirLight);
+    world.scene.add(new THREE.AmbientLight(0xffffff, 2.35));
+    const key = new THREE.DirectionalLight(0xffffff, 1.05);
+    key.position.set(0.6, 2.2, 1.4);
+    world.scene.add(key);
+    const fill = new THREE.DirectionalLight(0xf2f6ff, 0.55);
+    fill.position.set(-0.8, 1.2, 1.6);
+    world.scene.add(fill);
+    const rim = new THREE.DirectionalLight(0xffffff, 0.45);
+    rim.position.set(0, 1.5, -2.2);
+    world.scene.add(rim);
 
     // Dark background for inline (non-XR) desktop preview.
     // IWSDK automatically switches to a transparent AR framebuffer on Quest.
     world.renderer.setClearColor(0x0a0e14, 1);
+    world.renderer.toneMappingExposure = Math.max(world.renderer.toneMappingExposure, 1) * 1.12;
 
     // Quest Browser requires the WebGL context to be XR-compatible before
     // a session is requested.  Calling makeXRCompatible() here — eagerly,
@@ -1240,6 +1360,13 @@ async function main(): Promise<void> {
     world.registerSystem(DicomSystem);
 
     await createDashboard(world, imageIds[0], imageIds.length);
+    await loadWebPreviewGlb(world);
+
+    for (const view of PLANE_IDS) {
+      await openViewPanel(world, view);
+      gOpenViews!.add(view);
+    }
+    gDashboardDirty = true;
 
     document.getElementById('xr-root')?.classList.add('xr-scene-ready');
     hideOverlay();

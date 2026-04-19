@@ -176,6 +176,11 @@ type ViewPanel = {
   headerCanvas:  HTMLCanvasElement;
   headerCtx:     CanvasRenderingContext2D;
   headerTexture: THREE.CanvasTexture;
+  // Per-panel pointer scrub state (ray drag over viewport mesh).
+  scrubPointerId: number | null;
+  scrubLastIndex: number;
+  scrubInFlight: boolean;
+  scrubQueuedIndex: number | null;
 };
 
 // Local offsets from panel center to each handle (at scale 1.0).
@@ -248,6 +253,57 @@ async function handleSliderJump(
     await utilities.jumpToSlice(panel.domEl as HTMLDivElement, { imageIndex: idx, volumeId: VOLUME_ID });
     gDashboardDirty = true;
   } catch { /* ignore */ }
+}
+
+function sliceIndexFromViewportUv(
+  panel: ViewPanel,
+  uv: THREE.Vector2,
+): number | null {
+  if (!gRE) return null;
+  try {
+    const vp = gRE.getViewport(panel.vpId) as Types.IVolumeViewport;
+    const info = utilities.getVolumeViewportScrollInfo(vp, VOLUME_ID);
+    if (info.numScrollSteps <= 1) return 0;
+    // UV origin is bottom-left; convert to "top-left = 0, bottom-right = 1".
+    const t = THREE.MathUtils.clamp((uv.x + (1 - uv.y)) / 2, 0, 1);
+    return Math.round(t * (info.numScrollSteps - 1));
+  } catch {
+    return null;
+  }
+}
+
+function requestViewportSliceJump(panel: ViewPanel, imageIndex: number): void {
+  const idx = Math.max(0, Math.trunc(imageIndex));
+  if (panel.scrubInFlight) {
+    panel.scrubQueuedIndex = idx;
+    return;
+  }
+  panel.scrubInFlight = true;
+  panel.scrubQueuedIndex = null;
+  panel.scrubLastIndex = idx;
+  void utilities.jumpToSlice(panel.domEl as HTMLDivElement, { imageIndex: idx, volumeId: VOLUME_ID })
+    .then(() => {
+      (gRE as any)?._needsRender?.add(panel.vpId);
+      gDashboardDirty = true;
+    })
+    .catch((err) => {
+      console.warn('[DICOM XR] viewport drag scrub failed:', err);
+    })
+    .finally(() => {
+      panel.scrubInFlight = false;
+      const queued = panel.scrubQueuedIndex;
+      panel.scrubQueuedIndex = null;
+      if (queued !== null && queued !== panel.scrubLastIndex) {
+        requestViewportSliceJump(panel, queued);
+      }
+    });
+}
+
+function applyViewportScrubFromUv(panel: ViewPanel, uv?: THREE.Vector2): void {
+  if (!uv) return;
+  const idx = sliceIndexFromViewportUv(panel, uv);
+  if (idx === null || idx === panel.scrubLastIndex) return;
+  requestViewportSliceJump(panel, idx);
 }
 
 function xrCacheSetProgress(msg: string): void {
@@ -1034,12 +1090,33 @@ async function openViewPanel(world: World, view: PlaneId): Promise<void> {
     dragHandleEntity, resizeHandleEntity,
     lastResizePos: initResizePos.clone(),
     headerCanvas, headerCtx, headerTexture: headerTex,
+    scrubPointerId: null,
+    scrubLastIndex: -1,
+    scrubInFlight: false,
+    scrubQueuedIndex: null,
   };
 
   viewportMesh.addEventListener('pointerenter', () => { gHoveredView = panel; });
   viewportMesh.addEventListener('pointerleave', () => {
     if (gHoveredView === panel) gHoveredView = null;
+    panel.scrubPointerId = null;
   });
+  viewportMesh.addEventListener('pointerdown', (e: any) => {
+    panel.scrubPointerId = typeof e.pointerId === 'number' ? e.pointerId : null;
+    applyViewportScrubFromUv(panel, e.uv as THREE.Vector2 | undefined);
+  });
+  viewportMesh.addEventListener('pointermove', (e: any) => {
+    const pid = typeof e.pointerId === 'number' ? e.pointerId : null;
+    if (panel.scrubPointerId !== null && pid !== null && panel.scrubPointerId !== pid) return;
+    applyViewportScrubFromUv(panel, e.uv as THREE.Vector2 | undefined);
+  });
+  const endScrub = (e: any): void => {
+    const pid = typeof e.pointerId === 'number' ? e.pointerId : null;
+    if (panel.scrubPointerId !== null && pid !== null && panel.scrubPointerId !== pid) return;
+    panel.scrubPointerId = null;
+  };
+  viewportMesh.addEventListener('pointerup', endScrub);
+  viewportMesh.addEventListener('pointercancel', endScrub);
 
   gPanels.set(view, panel);
 }
@@ -1049,6 +1126,7 @@ function closeViewPanel(view: PlaneId): void {
   if (!panel) return;
 
   if (gHoveredView === panel) gHoveredView = null;
+  panel.scrubPointerId = null;
 
   panel.entity.destroy();
   panel.dragHandleEntity.destroy();

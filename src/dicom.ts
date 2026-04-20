@@ -3,10 +3,9 @@ import { imageLoader, metaData } from '@cornerstonejs/core';
 /**
  * Directory URL for manifest + slices.
  *
- * Default: **`dicom/data/`** under the app’s Vite **`import.meta.env.BASE_URL`** (site root in dev),
- * so it always matches the middleware mount **`/dicom/data/`** even when the current document is under
- * **`/glb/`** or another subpath (resolving against `location.href` alone would incorrectly yield
- * **`/glb/dicom/data/`** and return HTML instead of JSON).
+ * Default: **`dicom/data/`** under the app’s Vite **`import.meta.env.BASE_URL`**.
+ * Absolute bases (e.g. `/dicom-viewer/`) resolve from `location.origin`; relative
+ * bases (e.g. `./`) resolve from the current page URL so GitHub Pages subpaths work.
  *
  * **Override:** `VITE_DICOM_DATA_BASE` — full `http(s)` URL, or a path joined to `location.origin`
  * (leading `/` optional).
@@ -22,11 +21,16 @@ export function getDicomDataDirUrl(): URL {
     return new URL(withSlash, window.location.origin);
   }
 
-  const base = import.meta.env.BASE_URL ?? '/';
-  const root =
-    !base || base === './' ? '/' : base.startsWith('/') ? base : `/${base}`;
-  const withSlash = root.endsWith('/') ? root : `${root}/`;
-  return new URL('dicom/data/', new URL(withSlash, window.location.origin));
+  const base = (import.meta.env.BASE_URL ?? './').trim() || './';
+  const withSlash = base.endsWith('/') ? base : `${base}/`;
+  /**
+   * Resolve BASE_URL relative to the current page for relative values (e.g. "./"),
+   * and relative to origin for absolute values (e.g. "/dicom-viewer/").
+   */
+  const appRootUrl = withSlash.startsWith('/')
+    ? new URL(withSlash, window.location.origin)
+    : new URL(withSlash, window.location.href);
+  return new URL('dicom/data/', appRootUrl);
 }
 
 const DICOM_DATA_PATH_MARKER = 'dicom/data/';

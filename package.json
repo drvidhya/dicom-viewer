@@ -8,7 +8,6 @@
     "dev": "concurrently -k -n http,https -c cyan,magenta \"vite --config vite/vite.config.ts\" \"vite --config vite/vite.config.https.ts\"",
     "dev:http": "vite --config vite/vite.config.ts",
     "dev:https": "vite --config vite/vite.config.https.ts",
-    "gen:manifest": "node src/scripts/generate-dicom-manifest.mjs",
     "build": "rimraf dist && tsc && vite build --config vite/vite.config.ts",
     "preview": "vite preview --config vite/vite.config.ts",
     "preview:host": "vite preview --config vite/vite.config.ts --host 0.0.0.0 --port 4173",

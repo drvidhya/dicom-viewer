@@ -33,11 +33,13 @@ import {
 import { initCornerstone } from './cornerstone';
 import {
   ctVoiCallback,
+  fetchXrPreviewGlbFilename,
   getDicomDataDirUrl,
   getVoiFromMetadata,
   imageIdsReadyForVolume,
   loadFromManifest,
   prefetchAll,
+  XR_PREVIEW_GLB_DEFAULT,
 } from './dicom';
 import {
   registerDicomServiceWorker,
@@ -71,7 +73,6 @@ const PANEL_W    = 0.65;  // viewport panel width  (metres)
 const PANEL_H    = 0.65;  // viewport panel height (metres)
 /** Longest axis of the isosurface after scaling — strictly smaller than a viewport panel. */
 const GLB_PREVIEW_MAX_AXIS_M = Math.min(PANEL_W, PANEL_H) * 0.4;
-const GLB_PREVIEW_DEFAULT = 'web-preview.glb';
 const GLB_GRAB_HIT_RADIUS_M = GLB_PREVIEW_MAX_AXIS_M * 0.75;
 const HEADER_H   = 0.065; // title-bar height      (metres)
 const CANVAS_PX  = 512;   // Cornerstone canvas pixel size
@@ -1193,11 +1194,12 @@ function createDashboard(
   return mesh;
 }
 
-function glbFileFromQuery(): string {
+/** `?glb=` basename wins; otherwise uses the name from {@link manifest.json} (via caller). */
+function glbFileFromQuery(manifestDefault: string): string {
   const raw = new URLSearchParams(window.location.search).get('glb');
-  if (!raw?.trim()) return GLB_PREVIEW_DEFAULT;
-  const base = raw.split(/[/\\]/).pop() ?? GLB_PREVIEW_DEFAULT;
-  return base.length > 0 ? base : GLB_PREVIEW_DEFAULT;
+  if (!raw?.trim()) return manifestDefault;
+  const base = raw.split(/[/\\]/).pop() ?? manifestDefault;
+  return base.length > 0 ? base : manifestDefault;
 }
 
 function brightenGltfMaterials(root: THREE.Object3D): void {
@@ -1220,8 +1222,8 @@ function brightenGltfMaterials(root: THREE.Object3D): void {
  * Loads a lightweight GLB isosurface near the layout center (same asset as the GLB gallery).
  * Grabbable with one hand. Failure is non-fatal — volume slices still work without it.
  */
-async function loadWebPreviewGlb(world: World): Promise<void> {
-  const url = new URL(glbFileFromQuery(), getDicomDataDirUrl()).href;
+async function loadWebPreviewGlb(world: World, manifestGlbBasename: string): Promise<void> {
+  const url = new URL(glbFileFromQuery(manifestGlbBasename), getDicomDataDirUrl()).href;
   const loader = new GLTFLoader();
   let gltf: Awaited<ReturnType<GLTFLoader['loadAsync']>>;
   try {
@@ -1288,6 +1290,7 @@ async function main(): Promise<void> {
     await initCornerstone();
 
     let imageIds: string[];
+    let xrPreviewGlb = XR_PREVIEW_GLB_DEFAULT;
 
     const session = loadSession();
     let usedSession = false;
@@ -1297,10 +1300,12 @@ async function main(): Promise<void> {
       gVoiRange  = session.voiRange;
       setProgress('Using cached session…');
       await prefetchAll(imageIds, (l, t) => setProgress(`Prefetching ${l}/${t}…`));
+      xrPreviewGlb = await fetchXrPreviewGlbFilename();
     } else {
       const result = await loadFromManifest(setProgress);
       imageIds  = result.imageIds;
       gVoiRange = result.voiRange;
+      xrPreviewGlb = result.xrPreviewGlb;
     }
 
     const nXr = imageIds.length;
@@ -1310,6 +1315,7 @@ async function main(): Promise<void> {
       const result = await loadFromManifest(setProgress);
       imageIds  = result.imageIds;
       gVoiRange = result.voiRange;
+      xrPreviewGlb = result.xrPreviewGlb;
       imageIds = imageIdsReadyForVolume(imageIds);
     }
     if (imageIds.length === 0) {
@@ -1381,7 +1387,7 @@ async function main(): Promise<void> {
     world.registerSystem(DicomSystem);
 
     createDashboard(world, imageIds[0], imageIds.length);
-    await loadWebPreviewGlb(world);
+    await loadWebPreviewGlb(world, xrPreviewGlb);
 
     for (const view of PLANE_IDS) {
       await openViewPanel(world, view);

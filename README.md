@@ -17,8 +17,9 @@ npm install
 Place DICOM files under **`dicom/data/`** (flat files or subfolders). Generate the manifest:
 
 ```bash
-npm run gen:manifest
+node scripts/generate-dicom-manifest.mjs
 ```
+(`node scripts/generate-dicom-manifest.mjs --help` for options and alternate data directories.)
 
 Start the dev servers (HTTP on port **3000** and HTTPS on **3001**):
 
@@ -42,16 +43,15 @@ npm run dev:https   # https://localhost:3001
 | `npm run dev`          | Concurrent HTTP + HTTPS Vite dev                       |
 | `npm run dev:http`     | HTTP dev only (port 3000)                              |
 | `npm run dev:https`    | HTTPS dev only (port 3001)                             |
-| `npm run gen:manifest` | Scan `dicom/data` and write `dicom/data/manifest.json` |
 | `npm run build`        | Typecheck + production build into `dist/`              |
 | `npm run preview`      | Serve `dist/` locally                                  |
 | `npm run preview:host` | Preview bound to `0.0.0.0:4173`                        |
 
 ## Data layout
 
-**Workflow:** Edit application **source** only on **`main`** (`src/`, `static/`, TypeScript and Vite config). The **`dist/`** tree is **only** produced by **`npm run build`** (it is removed first, then rebuilt). Do not hand-edit files under **`dist/`**. **DICOM study files** under **`dicom/data/`** (and **`manifest.json`** from **`npm run gen:manifest`**) are **not** Vite build output; they are dataset assets you keep beside **`dist/`** for deploys.
+**Workflow:** Edit application **source** only on **`main`** (`src/`, `static/`, TypeScript and Vite config). The **`dist/`** tree is **only** produced by **`npm run build`** (it is removed first, then rebuilt). Do not hand-edit files under **`dist/`**. **DICOM study files** under **`dicom/data/`** (and **`manifest.json`** from **`node scripts/generate-dicom-manifest.mjs`**) are **not** Vite build output; they are dataset assets you keep beside **`dist/`** for deploys.
 
-Keep DICOM in **`dicom/data/`** at the **repository root** (next to `package.json`). Run **`npm run gen:manifest`** there. **`dicom/`** is **gitignored** so it stays on disk when you change branches; you choose what to upload for deploys.
+Keep DICOM in **`dicom/data/`** at the **repository root** (next to `package.json`). Run **`node scripts/generate-dicom-manifest.mjs`** there. **`dicom/`** is **gitignored** so it stays on disk when you change branches; you choose what to upload for deploys.
 
 | Path          | Role                                                                                |
 | ------------- | ----------------------------------------------------------------------------------- |

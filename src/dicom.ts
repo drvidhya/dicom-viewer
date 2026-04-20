@@ -35,6 +35,68 @@ export function getDicomDataDirUrl(): URL {
 
 const DICOM_DATA_PATH_MARKER = 'dicom/data/';
 
+/** Default XR isosurface GLB when manifest lists no `.glb` files. */
+export const XR_PREVIEW_GLB_DEFAULT = 'web-preview.glb';
+
+function manifestEntryBasename(entry: string): string {
+  const trimmed = entry.replace(/^\/+/, '');
+  const parts = trimmed.split('/');
+  return parts[parts.length - 1] ?? trimmed;
+}
+
+function manifestEntryIsGlb(entry: string): boolean {
+  return manifestEntryBasename(entry).toLowerCase().endsWith('.glb');
+}
+
+/**
+ * Picks the XR isosurface preview file from manifest `files` paths.
+ * Prefers `web-preview.glb` when present; otherwise the first `.glb` (locale-aware sort).
+ */
+export function pickXrPreviewGlbFilename(files: string[]): string {
+  const names = files
+    .filter((f) => manifestEntryIsGlb(f))
+    .map((f) => manifestEntryBasename(f))
+    .filter(Boolean);
+  if (names.length === 0) {
+    return XR_PREVIEW_GLB_DEFAULT;
+  }
+  if (names.includes(XR_PREVIEW_GLB_DEFAULT)) {
+    return XR_PREVIEW_GLB_DEFAULT;
+  }
+  const sorted = [...names].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  return sorted[0]!;
+}
+
+/** Fetches `manifest.json` and returns the `files` array (relative paths, POSIX slashes). */
+export async function fetchManifestFiles(): Promise<string[]> {
+  const manifestUrl = new URL('manifest.json', getDicomDataDirUrl());
+  let text: string;
+  try {
+    const res = await fetch(manifestUrl);
+    if (!res.ok) throw new Error(`Failed to fetch manifest.json (${res.status})`);
+    text = await res.text();
+  } catch (e) {
+    const busted = new URL(manifestUrl);
+    busted.searchParams.set('refresh', `${Date.now()}`);
+    const res2 = await fetch(busted, { cache: 'no-store' });
+    if (!res2.ok) {
+      throw new Error(
+        `Failed to fetch manifest.json after retry (${res2.status}): ${
+          e instanceof Error ? e.message : String(e)
+        }`,
+      );
+    }
+    text = await res2.text();
+  }
+  return parseManifestPayload(text);
+}
+
+/** XR preview GLB basename from the current manifest (see {@link pickXrPreviewGlbFilename}). */
+export async function fetchXrPreviewGlbFilename(): Promise<string> {
+  const files = await fetchManifestFiles();
+  return pickXrPreviewGlbFilename(files);
+}
+
 /**
  * Rewrites stored `wadouri:` ids to use the current {@link getDicomDataDirUrl} base
  * (fixes localhost vs 127.0.0.1, GitHub Pages vs dev, or older path shapes).
@@ -111,31 +173,14 @@ function parseManifestPayload(text: string): string[] {
 }
 
 export async function fetchImageIds(): Promise<string[]> {
-  const manifestUrl = new URL('manifest.json', getDicomDataDirUrl());
-  let files: string[];
-  try {
-    const res = await fetch(manifestUrl);
-    if (!res.ok) throw new Error(`Failed to fetch manifest.json (${res.status})`);
-    files = parseManifestPayload(await res.text());
-  } catch (e) {
-    // Retry once with a cache-busting query in case an old SW cache entry contains bad data.
-    const busted = new URL(manifestUrl);
-    busted.searchParams.set('refresh', `${Date.now()}`);
-    const res2 = await fetch(busted, { cache: 'no-store' });
-    if (!res2.ok) {
-      throw new Error(
-        `Failed to fetch manifest.json after retry (${res2.status}): ${
-          e instanceof Error ? e.message : String(e)
-        }`,
-      );
-    }
-    files = parseManifestPayload(await res2.text());
-  }
+  const files = await fetchManifestFiles();
   const dir = getDicomDataDirUrl();
-  return files.map((f) => {
-    const rel = f.replace(/^\/+/, '');
-    return `wadouri:${new URL(rel, dir).href}`;
-  });
+  return files
+    .filter((f) => !manifestEntryIsGlb(f))
+    .map((f) => {
+      const rel = f.replace(/^\/+/, '');
+      return `wadouri:${new URL(rel, dir).href}`;
+    });
 }
 
 export async function prefetchAndSort(
@@ -221,14 +266,26 @@ export function ctVoiCallback(lower: number, upper: number) {
 
 export async function loadFromManifest(
   onProgress: (msg: string) => void,
-): Promise<{ imageIds: string[]; voiRange: { lower: number; upper: number } }> {
+): Promise<{
+  imageIds: string[];
+  voiRange: { lower: number; upper: number };
+  xrPreviewGlb: string;
+}> {
   onProgress('Loading manifest…');
-  const rawIds = await fetchImageIds();
+  const manifestFiles = await fetchManifestFiles();
+  const xrPreviewGlb = pickXrPreviewGlbFilename(manifestFiles);
+  const dir = getDicomDataDirUrl();
+  const rawIds = manifestFiles
+    .filter((f) => !manifestEntryIsGlb(f))
+    .map((f) => {
+      const rel = f.replace(/^\/+/, '');
+      return `wadouri:${new URL(rel, dir).href}`;
+    });
   onProgress('Prefetching images…');
   const imageIds = await prefetchAndSort(rawIds, (loaded, total) => {
     onProgress(`Loading ${loaded} / ${total}`);
   });
   const mid = imageIds[Math.floor(imageIds.length / 2)];
   const voiRange = getVoiFromMetadata(mid);
-  return { imageIds, voiRange };
+  return { imageIds, voiRange, xrPreviewGlb };
 }

@@ -159,6 +159,48 @@ function fail(message) {
   throw new Error(message);
 }
 
+/** Thrown for bad CLI usage; {@link main} prints {@link printHelp} when `showHelp` is true. */
+class CliUserError extends Error {
+  /** @param {string} message */
+  constructor(message, options = {}) {
+    super(message);
+    this.name = 'CliUserError';
+    this.showHelp = options.showHelp === true;
+  }
+}
+
+function failWithHelp(message) {
+  throw new CliUserError(message, { showHelp: true });
+}
+
+function scriptBasename() {
+  return path.basename(fileURLToPath(import.meta.url));
+}
+
+function printHelp() {
+  const n = scriptBasename();
+  process.stderr.write(
+    `${n} — marching-cubes isosurface from a DICOM folder → GLB\n\n` +
+      `Usage:\n` +
+      `  node scripts/${n} <dicom-folder> [output.glb] [options]\n\n` +
+      `Arguments:\n` +
+      `  dicom-folder  Directory of DICOM slices (required).\n` +
+      `  output.glb    Output path (default: ./model.glb in the current directory).\n\n` +
+      `Paths:\n` +
+      `  Relative dicom-folder and output.glb are resolved from the current working directory\n` +
+      `  (where you run node), not from the script file location.\n\n` +
+      `Options (all optional; defaults in parentheses):\n` +
+      `  --hu <n>         Hounsfield isovalue (${DEFAULTS.hu == null ? 'auto from VOI, else -100' : DEFAULTS.hu})\n` +
+      `  --smooth <n>     Windowed-sinc iterations (${DEFAULTS.smooth})\n` +
+      `  --simplify <r>   Decimation ratio (0,1] (${DEFAULTS.simplify})\n` +
+      `  --max-tris <n>   Triangle budget (${DEFAULTS.maxTris})\n` +
+      `  -h, --help       Show this help and exit.\n\n` +
+      `Examples:\n` +
+      `  node scripts/${n} dicom/data\n` +
+      `  node scripts/${n} dicom/data out/mesh.glb --hu -160 --max-tris 200000\n`,
+  );
+}
+
 function parseCli(argv) {
   const args = [...argv];
   const positional = [];
@@ -174,13 +216,13 @@ function parseCli(argv) {
 
     const value = args.shift();
     if (value === undefined) {
-      fail(`Missing value for option ${token}`);
+      failWithHelp(`Missing value for option ${token}`);
     }
 
     if (token === '--hu') {
       options.hu = Number(value);
       if (!Number.isFinite(options.hu)) {
-        fail('--hu must be a finite number');
+        failWithHelp('--hu must be a finite number');
       }
     } else if (token === '--smooth') {
       options.smooth = Number(value);
@@ -189,39 +231,35 @@ function parseCli(argv) {
     } else if (token === '--max-tris') {
       options.maxTris = Number(value);
     } else {
-      fail(`Unknown option: ${token}`);
+      failWithHelp(`Unknown option: ${token}`);
     }
   }
 
   const [inputFolder, outputPathRaw] = positional;
   if (!inputFolder) {
-    fail(
-      'Usage: node scripts/dicom-to-gltf.mjs <dicom-folder> [output.glb] --hu <value> --smooth <n> --simplify <ratio> --max-tris <n>\n' +
-        '  (default output: glb/<input-folder-name>.glb; --max-tris caps triangles for web-friendly GLB)',
-    );
+    failWithHelp('Missing required argument: <dicom-folder>');
   }
 
   if (!Number.isInteger(options.smooth) || options.smooth < 0) {
-    fail('--smooth must be a non-negative integer');
+    failWithHelp('--smooth must be a non-negative integer');
   }
 
   if (!Number.isFinite(options.simplify) || options.simplify <= 0 || options.simplify > 1) {
-    fail('--simplify must be in (0.0, 1.0]');
+    failWithHelp('--simplify must be in (0.0, 1.0]');
   }
 
   if (!Number.isInteger(options.maxTris) || options.maxTris < 1000) {
-    fail('--max-tris must be an integer >= 1000');
+    failWithHelp('--max-tris must be an integer >= 1000');
   }
 
-  const inputPath = path.resolve(inputFolder);
+  const inputPath = path.resolve(process.cwd(), inputFolder);
   if (!fs.existsSync(inputPath) || !fs.statSync(inputPath).isDirectory()) {
-    fail(`Input folder does not exist or is not a directory: ${inputPath}`);
+    failWithHelp(`Input folder does not exist or is not a directory: ${inputPath}`);
   }
 
-  const glbDir = path.resolve(process.cwd(), 'glb');
   const outputPath = outputPathRaw
-    ? path.resolve(outputPathRaw)
-    : path.join(glbDir, `${path.basename(inputPath)}.glb`);
+    ? path.resolve(process.cwd(), outputPathRaw)
+    : path.resolve(process.cwd(), 'model.glb');
 
   return {
     inputPath,
@@ -974,9 +1012,18 @@ function toMb(bytes) {
 }
 
 async function main() {
-  const { inputPath, outputPath, huValueOverride, smoothIter, simplifyRatio, maxTris } = parseCli(
-    process.argv.slice(2),
-  );
+  const argv = process.argv.slice(2);
+  if (argv.includes('-h') || argv.includes('--help')) {
+    printHelp();
+    process.exit(0);
+  }
+
+  const { inputPath, outputPath, huValueOverride, smoothIter, simplifyRatio, maxTris } =
+    parseCli(argv);
+
+  log(`cwd: ${process.cwd()}`);
+  log(`Reading DICOM from: ${inputPath}`);
+  log(`Writing GLB to: ${outputPath}`);
 
   const outputDir = path.dirname(outputPath);
   fs.mkdirSync(outputDir, { recursive: true });
@@ -986,7 +1033,7 @@ async function main() {
   const allFiles = listFilesRecursive(inputPath);
   log(`DICOM files found: ${allFiles.length}`);
   if (allFiles.length === 0) {
-    fail(`No files found in input folder: ${inputPath}`);
+    failWithHelp(`No files found in input folder: ${inputPath}`);
   }
 
   const loadedImageIds = [];
@@ -1321,6 +1368,12 @@ async function main() {
 }
 
 main().catch((error) => {
-  process.stderr.write(`${error.stack || error.message}\n`);
+  const isCli = error instanceof CliUserError || error?.name === 'CliUserError';
+  if (isCli && error.showHelp) {
+    process.stderr.write(`${error.message}\n\n`);
+    printHelp();
+  } else {
+    process.stderr.write(`${error.stack || error.message}\n`);
+  }
   process.exit(1);
 });

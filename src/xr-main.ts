@@ -75,6 +75,12 @@ const GLB_PREVIEW_DEFAULT = 'web-preview.glb';
 const GLB_GRAB_HIT_RADIUS_M = GLB_PREVIEW_MAX_AXIS_M * 0.75;
 const HEADER_H   = 0.065; // title-bar height      (metres)
 const CANVAS_PX  = 512;   // Cornerstone canvas pixel size
+/** When slice indices are unchanged, still blit Cornerstone at this interval (ms) so W/L updates appear. */
+const XR_CORNERSTONE_BLIT_IDLE_MS = 150;
+/** Force full-rate Cornerstone blits for this many frames after XR panels mount. */
+const XR_STARTUP_BLIT_FRAMES = 36;
+/** After a slice jump, blit this many frames so the new slice appears even if snapshot lags one frame. */
+const XR_SLICE_JUMP_BLIT_FRAMES = 12;
 
 const DASH_W_M  = 0.72;   // dashboard width in scene (metres)
 const DASH_CW   = 1024;   // dashboard texture width (px)
@@ -195,6 +201,8 @@ type ViewPanel = {
   sliceJumpInFlight: boolean;
   sliceJumpQueued: number | null;
   sliceLastIndex: number;
+  /** Last header/strip paint key (`current/total`); skip 2D redraw when unchanged. */
+  lastPaintedSliceKey: string;
 };
 
 // Local offsets from panel center to each handle (at scale 1.0).
@@ -218,6 +226,13 @@ const RESIZE_HANDLE_BASE_LEN = RESIZE_HANDLE_OFFSET.length();
 const _tmpResizeDir = new THREE.Vector3();
 const _tmpDragCorner = new THREE.Vector3();
 const _tmpRhCorner   = new THREE.Vector3();
+const _tmpResizeDelta = new THREE.Vector3();
+
+let gPrevSliceSnapshot = '';
+let gLastCornerstoneBlitMs = 0;
+let gXrStartupBlitCountdown = XR_STARTUP_BLIT_FRAMES;
+let gCornerstoneBlitBoostFrames = 0;
+const gSliceStateScratch = new Map<string, { current: number; total: number }>();
 
 function resizeHandleWorldDir(panelObj: THREE.Object3D, target: THREE.Vector3): THREE.Vector3 {
   return target
@@ -239,19 +254,19 @@ const gPanels = new Map<string, ViewPanel>();
 
 // ── Cornerstone slice-state helpers ──────────────────────────────────────────
 
-function getSliceStates(): Map<string, { current: number; total: number }> {
-  const result = new Map<string, { current: number; total: number }>();
-  if (!gRE) return result;
+function fillSliceStates(out: Map<string, { current: number; total: number }>): Map<string, { current: number; total: number }> {
+  out.clear();
+  if (!gRE) return out;
   for (const view of PLANE_IDS) {
     const panel = gPanels.get(view);
     if (!panel) continue;
     try {
       const vp   = gRE.getViewport(panel.vpId) as Types.IVolumeViewport;
       const info = utilities.getVolumeViewportScrollInfo(vp, VOLUME_ID);
-      result.set(view, { current: info.currentStepIndex + 1, total: info.numScrollSteps });
+      out.set(view, { current: info.currentStepIndex + 1, total: info.numScrollSteps });
     } catch { /* viewport not ready yet */ }
   }
-  return result;
+  return out;
 }
 
 /** Map vertical strip UV to slice fraction (0 = first slice, 1 = last). */
@@ -278,6 +293,7 @@ function requestPanelSliceJump(panel: ViewPanel, imageIndex: number): void {
     .then(() => {
       (gRE as any)?._needsRender?.add(panel.vpId);
       gDashboardDirty = true;
+      gCornerstoneBlitBoostFrames = Math.max(gCornerstoneBlitBoostFrames, XR_SLICE_JUMP_BLIT_FRAMES);
     })
     .catch(() => { /* ignore */ })
     .finally(() => {
@@ -381,7 +397,20 @@ async function runXRCacheRebuild(): Promise<void> {
 
 class DicomSystem extends createSystem({}) {
   update(_delta: number, _time: number) {
-    const sliceStates = getSliceStates();
+    const sliceStates = fillSliceStates(gSliceStateScratch);
+    const snap = PLANE_IDS.map((v) => {
+      const s = sliceStates.get(v);
+      return s ? `${s.current}/${s.total}` : '--';
+    }).join('|');
+    const sliceChanged = snap !== gPrevSliceSnapshot;
+    gPrevSliceSnapshot = snap;
+
+    const now = performance.now();
+    const idleBlitDue = now - gLastCornerstoneBlitMs >= XR_CORNERSTONE_BLIT_IDLE_MS;
+    const startupBlit = gXrStartupBlitCountdown > 0;
+    const boostBlit = gCornerstoneBlitBoostFrames > 0;
+    const shouldBlitCornerstone =
+      Boolean(gRE && gPanels.size > 0) && (sliceChanged || idleBlitDue || startupBlit || boostBlit);
 
     // ── Main dashboard: center-top drag handle drives position + rotation ─────
     if (gDashMeshRef && gDashDragEntity) {
@@ -405,11 +434,11 @@ class DicomSystem extends createSystem({}) {
       const rhPos    = panel.resizeHandleEntity.object3D!.position;
 
       // ── Resize: uniform scale; snap resize handle on bottom-right diagonal ──
-      const resizeDelta = rhPos.clone().sub(panel.lastResizePos);
-      if (resizeDelta.lengthSq() > 1e-10) {
+      _tmpResizeDelta.subVectors(rhPos, panel.lastResizePos);
+      if (_tmpResizeDelta.lengthSq() > 1e-10) {
         const center   = panelObj.position;
         const worldDir = resizeHandleWorldDir(panelObj, _tmpResizeDir);
-        const tAlong   = rhPos.clone().sub(center).dot(worldDir);
+        const tAlong   = _tmpRhCorner.subVectors(rhPos, center).dot(worldDir);
         const newScale = THREE.MathUtils.clamp(tAlong / RESIZE_HANDLE_BASE_LEN, 0.3, 3.0);
         panelObj.scale.setScalar(newScale);
         rhPos.copy(center).addScaledVector(worldDir, newScale * RESIZE_HANDLE_BASE_LEN);
@@ -430,20 +459,16 @@ class DicomSystem extends createSystem({}) {
       panel.lastResizePos.copy(rhPos);
 
       const ss = sliceStates.get(panel.view);
-      redrawViewPanelHeader(
-        panel.headerCtx,
-        panel.view,
-        ss?.current ?? 1,
-        ss?.total ?? 0,
-      );
-      panel.headerTexture.needsUpdate = true;
-      redrawPanelSliceStrip(
-        panel.sliderCtx,
-        panel.view,
-        ss?.current ?? 1,
-        ss?.total ?? 0,
-      );
-      panel.sliderTexture.needsUpdate = true;
+      const cur = ss?.current ?? 1;
+      const tot = ss?.total ?? 0;
+      const sliceKey = `${cur}/${tot}`;
+      if (sliceKey !== panel.lastPaintedSliceKey) {
+        panel.lastPaintedSliceKey = sliceKey;
+        redrawViewPanelHeader(panel.headerCtx, panel.view, cur, tot);
+        panel.headerTexture.needsUpdate = true;
+        redrawPanelSliceStrip(panel.sliderCtx, panel.view, cur, tot);
+        panel.sliderTexture.needsUpdate = true;
+      }
     }
 
     // ── Dashboard redraw ──────────────────────────────────────────────────────
@@ -461,7 +486,13 @@ class DicomSystem extends createSystem({}) {
     // window.rAF, so Cornerstone's callback never fires.
     // Fix: write viewport IDs directly into Cornerstone's _needsRender Set and
     // call _renderFlaggedViewports() ourselves, bypassing the rAF gate entirely.
-    if (gRE && gPanels.size > 0) {
+    // Throttle when slice indices are unchanged so moving unrelated grabbables
+    // (e.g. GLB) does not pay three full Cornerstone renders + 512² drawImage every XR frame.
+    if (shouldBlitCornerstone) {
+      gLastCornerstoneBlitMs = now;
+      if (gXrStartupBlitCountdown > 0) gXrStartupBlitCountdown--;
+      if (gCornerstoneBlitBoostFrames > 0) gCornerstoneBlitBoostFrames--;
+
       const re = gRE as any;
       for (const panel of gPanels.values()) {
         re._needsRender.add(panel.vpId);
@@ -1043,6 +1074,7 @@ async function openViewPanel(world: World, view: PlaneId): Promise<void> {
     sliceJumpInFlight: false,
     sliceJumpQueued: null,
     sliceLastIndex: -1,
+    lastPaintedSliceKey: '',
   };
 
   const stripPointerId = (e: any): number | null =>
@@ -1354,6 +1386,10 @@ async function main(): Promise<void> {
     for (const view of PLANE_IDS) {
       await openViewPanel(world, view);
     }
+    gPrevSliceSnapshot = '';
+    gXrStartupBlitCountdown = XR_STARTUP_BLIT_FRAMES;
+    gLastCornerstoneBlitMs = 0;
+    gCornerstoneBlitBoostFrames = 0;
     gDashboardDirty = true;
 
     document.getElementById('xr-root')?.classList.add('xr-scene-ready');

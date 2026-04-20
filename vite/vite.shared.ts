@@ -64,9 +64,6 @@ function mimeForDicomDataPath(filePath: string): string {
 function staticDataPlugin(): Plugin {
   const dataDir = path.join(process.cwd(), 'dicom', 'data');
   const mountPath = '/dicom/data';
-  if (!fs.existsSync(dataDir)) {
-    console.warn('[vite] dicom/data not found; /dicom/data requests will 404');
-  }
 
   const attachMiddleware = (server: ViteDevServer | PreviewServer) => {
     server.middlewares.use(mountPath, (req, res, next) => {
@@ -123,9 +120,6 @@ function mimeForGlbPath(filePath: string): string {
 function staticGlbPlugin(): Plugin {
   const glbDir = path.resolve(process.cwd(), 'glb');
   const mountPath = '/glb';
-  if (!fs.existsSync(glbDir)) {
-    console.warn('[vite] glb/ not found; /glb requests will 404');
-  }
 
   const attachMiddleware = (server: ViteDevServer | PreviewServer) => {
     server.middlewares.use(mountPath, (req, res, next) => {
@@ -176,32 +170,6 @@ function staticGlbPlugin(): Plugin {
   };
 }
 
-function debugLogPlugin(): Plugin {
-  return {
-    name: 'debug-log',
-    configureServer(server: ViteDevServer) {
-      const logFile = path.join(process.cwd(), 'client-logs.jsonl');
-      server.middlewares.use('/api/log', (req, res) => {
-        if (req.method !== 'POST') { res.writeHead(405); res.end(); return; }
-        let body = '';
-        req.on('data', (chunk) => { body += chunk.toString(); });
-        req.on('end', () => {
-          try {
-            const data = JSON.parse(body);
-            console.log(`[CLIENT ${data.level}] ${data.message}`);
-            if (data.data) console.log('[CLIENT DATA]', data.data);
-            fs.appendFileSync(logFile, JSON.stringify({ timestamp: new Date().toISOString(), ...data }) + '\n');
-          } catch (e) {
-            console.error('[LOG ERROR]', e);
-          }
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ ok: true }));
-        });
-      });
-    },
-  };
-}
-
 export function createDicomViewerViteConfig(dev: DicomViewerDevOptions): UserConfig {
   const polySegStub = path.resolve(process.cwd(), 'src/shims/polyseg-wasm-stub.ts');
   return {
@@ -219,7 +187,6 @@ export function createDicomViewerViteConfig(dev: DicomViewerDevOptions): UserCon
       cornerstoneCodecPlugin(),
       staticDataPlugin(),
       staticGlbPlugin(),
-      debugLogPlugin(),
     ],
     server: {
       host: '0.0.0.0',

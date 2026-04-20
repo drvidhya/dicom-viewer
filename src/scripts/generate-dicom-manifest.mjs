@@ -53,7 +53,7 @@ async function main() {
   try {
     await fs.access(ROOT);
   } catch {
-    console.error(`Directory does not exist: ${ROOT}`);
+    process.stderr.write(`Directory does not exist: ${ROOT}\n`);
     process.exit(1);
   }
 
@@ -62,10 +62,9 @@ async function main() {
 
   const manifestPath = path.join(ROOT, MANIFEST_NAME);
   await fs.writeFile(manifestPath, `${JSON.stringify({ files }, null, 2)}\n`, 'utf8');
-  console.log(`Wrote ${manifestPath} (${files.length} files)`);
 }
 
 main().catch((e) => {
-  console.error(e);
+  process.stderr.write(`${e instanceof Error ? e.message : String(e)}\n`);
   process.exit(1);
 });

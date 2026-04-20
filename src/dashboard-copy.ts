@@ -8,8 +8,10 @@ export const DASH_HINT_2D_HTML =
 
 /** Plain text for the XR canvas dashboard (wrapped by `drawDashboard`). */
 export const DASH_HINT_XR_PLAIN =
-  'Use Open to open or close each plane as a floating panel. A service worker caches DICOM data like the 2D viewer. When a panel is open, use the slice slider ' +
-  'here, the thumbstick while pointing at the panel, or tap the track to jump.';
+  'Axial, sagittal, and coronal views float in front of you. Use the vertical slice strip on the right edge of each panel to change slices. A service worker caches DICOM data like the 2D viewer.';
 
 export const CACHE_BTN_CLEAR = 'Clear file cache';
 export const CACHE_BTN_REBUILD = 'Clear & refetch series';
+
+/** XR dashboard — leaves immersive session (see {@link World.exitXR}). */
+export const XR_BTN_EXIT = 'Exit XR';

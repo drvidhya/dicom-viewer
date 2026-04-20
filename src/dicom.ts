@@ -160,9 +160,7 @@ export async function prefetchAndSort(
             instance: gim?.instanceNumber,
             z: ipm?.imagePositionPatient?.[2],
           });
-        } catch (e) {
-          console.warn('[dicom] skipped slice (load/parse failed):', id, e);
-        }
+        } catch { /* skip slice */ }
       }),
     );
     onProgress?.(Math.min(i + BATCH, total), total);
@@ -208,9 +206,7 @@ export async function prefetchAll(
     const batch = imageIds.slice(i, Math.min(i + BATCH, total));
     await Promise.all(
       batch.map((id) =>
-        imageLoader.loadAndCacheImage(id).catch((e) => {
-          console.warn('[dicom] prefetch slice failed:', id, e);
-        }),
+        imageLoader.loadAndCacheImage(id).catch(() => { /* skip slice */ }),
       ),
     );
     onProgress?.(Math.min(i + BATCH, total), total);

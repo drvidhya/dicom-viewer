@@ -20,20 +20,7 @@ export async function registerDicomServiceWorker(): Promise<ServiceWorkerRegistr
     const reg = await navigator.serviceWorker.register(serviceWorkerScriptUrl());
     await navigator.serviceWorker.ready;
     return reg;
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    console.warn('[dicom-cache] Service worker registration failed:', e);
-    const sslHint =
-      msg.includes('SSL') ||
-      msg.includes('certificate') ||
-      (typeof DOMException !== 'undefined' &&
-        e instanceof DOMException &&
-        e.name === 'SecurityError');
-    if (sslHint) {
-      console.warn(
-        '[dicom-cache] Service workers cannot load on untrusted HTTPS. Use HTTP only (`npm run dev:http` → http://localhost:3000), a trusted HTTPS cert, or `npm run dev:https` (https://localhost:3001) if the browser trusts it. Default `npm run dev` starts both ports; SW/cache differ per origin.',
-      );
-    }
+  } catch {
     return null;
   }
 }

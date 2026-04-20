@@ -168,7 +168,6 @@ function setupCacheControls(imageIds: string[]) {
       updateStatus('Ready', 'ready');
       await refreshCacheStatusLine();
     } catch (e) {
-      console.error(e);
       showError(e instanceof Error ? e.message : String(e));
     } finally {
       hideOverlay();
@@ -386,9 +385,7 @@ async function runViewer(view: PlaneId) {
       await utilities.jumpToSlice(vpEl, { imageIndex: d.imageIndex, volumeId: VOLUME_ID });
       renderingEngine.renderViewports([VIEWPORT_ID]);
       postSliceSync();
-    } catch (err) {
-      console.warn('[viewer] jumpToSlice', err);
-    }
+    } catch { /* ignore */ }
   };
   viewChannel.addEventListener('message', onSliceMsg);
 
@@ -433,7 +430,7 @@ async function runViewer(view: PlaneId) {
         renderingEngine.renderViewports([VIEWPORT_ID]);
         postSliceSync();
       })
-      .catch((err) => console.warn('[viewer] jumpToSlice drag', err));
+      .catch(() => { /* ignore */ });
   }
 
   vpEl.addEventListener('pointerdown', (e) => {
@@ -477,7 +474,6 @@ async function runViewer(view: PlaneId) {
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 (isViewer ? runViewer(viewParam!) : runDashboard()).catch((err) => {
-  console.error(err);
   showError(err instanceof Error ? err.message : String(err));
 });
 

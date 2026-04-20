@@ -6,10 +6,9 @@
  *   • Cornerstone3D renders each view into a hidden off-screen DOM element.
  *   • Each frame, `DicomSystem` blits the Cornerstone canvas into a
  *     `THREE.CanvasTexture` that textures a grabbable panel mesh.
- *   • Dashboard panel (canvas-drawn): same layout as index.html — metadata, hint,
- *     cache bar, view cards with Open + slice slider (raycast hit targets).
+ *   • Dashboard panel (canvas-drawn): metadata, hint, cache bar, Exit XR control.
  *   • View panels (Axial / Sagittal / Coronal): default-open on a shallow horizontal
- *     arc in front of the user (each faces the head).  Grabbable; thumbstick Y scrolls slices.
+ *     arc in front of the user (each faces the head). Grabbable; vertical slice strip on the right.
  *   • Isosurface GLB: centered near the layout; two-hand grab for move + rotate (scale off).
  */
 
@@ -51,6 +50,7 @@ import {
   CACHE_BTN_REBUILD,
   DASH_HINT_XR_PLAIN,
   DASH_TITLE,
+  XR_BTN_EXIT,
 } from './dashboard-copy';
 import { getDicomStudyMeta, type DicomStudyMeta } from './dicom-study-meta';
 import {
@@ -78,20 +78,27 @@ const CANVAS_PX  = 512;   // Cornerstone canvas pixel size
 
 const DASH_W_M  = 0.72;   // dashboard width in scene (metres)
 const DASH_CW   = 1024;   // dashboard texture width (px)
-const DASH_CH   = 1180;   // dashboard texture height (px)
+/** Texture height (px); keep in sync with content in `drawDashboard`. */
+const DASH_CH   = 880;
 const DASH_H_METRES = DASH_W_M * (DASH_CH / DASH_CW);
 
 const VIEW_HEADER_PX_W = 512;
 const VIEW_HEADER_PX_H = 48;
 
-/** Panels rotate to face this point (standing head height). */
-const PANEL_LOOK_TARGET = new THREE.Vector3(0, 1.34, 0);
+/** Vertical slice control strip (canvas px); placed to the right of the DICOM viewport. */
+const SLIDER_PX_W = 56;
+const SLIDER_PX_H = CANVAS_PX;
+const SLIDER_STRIP_W_M = 0.052;
+const SLIDER_VIEWPORT_GAP_M = 0.014;
+
+/** Panels rotate to face this point (comfortable viewing height, below eye level). */
+const PANEL_LOOK_TARGET = new THREE.Vector3(0, 1.0, 0);
 
 /**
  * Horizontal arc in XZ: circle center sits a bit closer to the user; panels rest on
  * the rim bulging toward -Z so they form a curve instead of stacking.
  */
-const PANEL_ARC_CENTER = new THREE.Vector3(0, 1.32, -0.56);
+const PANEL_ARC_CENTER = new THREE.Vector3(0, 0.98, -0.56);
 const PANEL_ARC_RADIUS = 1.02;
 /** Degrees on the arc from centerline (0 = straight ahead; same as coronal). */
 const VIEW_ARC_ANGLE_DEG: Record<PlaneId, number> = {
@@ -103,8 +110,16 @@ const VIEW_ARC_ANGLE_DEG: Record<PlaneId, number> = {
 /** Vertical gap between coronal panel top and dashboard bottom (metres). */
 const DASH_GAP_ABOVE_CORONAL_M = 0.06;
 
-/** Isosurface GLB: between user and arc, centered in X. */
-const GLB_PREVIEW_POS = new THREE.Vector3(0, 1.28, -1.12);
+/**
+ * Isosurface GLB grab origin (metres), tuned in XR; values rounded from measured world/local pose.
+ */
+const GLB_PREVIEW_POS = new THREE.Vector3(-0.11, 0.2, -0.28);
+
+/**
+ * Default orientation for the preview mesh in world space (degrees, Euler order YXZ).
+ * Snapped to the nearest multiple of 90° from XR tuning (−84°, −29°, 30° → −90°, 0°, 0°).
+ */
+const GLB_PREVIEW_WORLD_YXZ_DEG = { x: -90, y: 0, z: 0 } as const;
 
 /** Point on the arc at `deg`; sets `out` to (x, arc deck y, z). */
 function arcPointAtAngleDeg(deg: number, out: THREE.Vector3): void {
@@ -131,19 +146,15 @@ type CacheBtnRect = {
 
 let gRE: RenderingEngine | null       = null;
 let gVoiRange = { lower: -500, upper: 500 };
-let gHoveredView: ViewPanel | null    = null;
-let gScrollAccum                      = 0;
 
 // Dashboard redraw state
 let gDashCtx:     CanvasRenderingContext2D | null = null;
 let gDashTexture: THREE.CanvasTexture | null      = null;
 let gDashMeta:    DicomStudyMeta | null            = null;
-let gOpenViews:   Set<string> | null              = null;
 let gDashboardDirty                               = false;
 
 // Cached hit-test rects (updated every time the dashboard is redrawn)
-let gOpenBtnRects: BtnRect[] = [];
-let gSliderRects: SliderRect[] = [];
+let gExitXrRect:  { x: number; y: number; w: number; h: number } | null = null;
 let gCacheBtnRects: CacheBtnRect[] = [];
 
 let gXRCacheStatus       = 'Offline file cache: …';
@@ -176,11 +187,14 @@ type ViewPanel = {
   headerCanvas:  HTMLCanvasElement;
   headerCtx:     CanvasRenderingContext2D;
   headerTexture: THREE.CanvasTexture;
-  // Per-panel pointer scrub state (ray drag over viewport mesh).
-  scrubPointerId: number | null;
-  scrubLastIndex: number;
-  scrubInFlight: boolean;
-  scrubQueuedIndex: number | null;
+  sliderCanvas:  HTMLCanvasElement;
+  sliderCtx:     CanvasRenderingContext2D;
+  sliderTexture: THREE.CanvasTexture;
+  /** Active pointer id on the vertical slice strip (null = not dragging). */
+  sliceStripPointerId: number | null;
+  sliceJumpInFlight: boolean;
+  sliceJumpQueued: number | null;
+  sliceLastIndex: number;
 };
 
 // Local offsets from panel center to each handle (at scale 1.0).
@@ -240,70 +254,54 @@ function getSliceStates(): Map<string, { current: number; total: number }> {
   return result;
 }
 
-async function handleSliderJump(
-  view: PlaneId,
-  fraction: number,
-): Promise<void> {
-  const panel = gPanels.get(view);
-  if (!panel || !gRE) return;
-  try {
-    const vp   = gRE.getViewport(panel.vpId) as Types.IVolumeViewport;
-    const info = utilities.getVolumeViewportScrollInfo(vp, VOLUME_ID);
-    const idx  = Math.round(fraction * (info.numScrollSteps - 1));
-    await utilities.jumpToSlice(panel.domEl as HTMLDivElement, { imageIndex: idx, volumeId: VOLUME_ID });
-    gDashboardDirty = true;
-  } catch { /* ignore */ }
+/** Map vertical strip UV to slice fraction (0 = first slice, 1 = last). */
+function sliceFractionFromStripUv(uv: THREE.Vector2 | undefined): number | null {
+  if (!uv) return null;
+  const sy = (1 - uv.y) * SLIDER_PX_H;
+  const pad = 14;
+  const yTop = pad;
+  const yBot = SLIDER_PX_H - pad;
+  if (yBot <= yTop) return 0;
+  return THREE.MathUtils.clamp((yBot - sy) / (yBot - yTop), 0, 1);
 }
 
-function sliceIndexFromViewportUv(
-  panel: ViewPanel,
-  uv: THREE.Vector2,
-): number | null {
-  if (!gRE) return null;
-  try {
-    const vp = gRE.getViewport(panel.vpId) as Types.IVolumeViewport;
-    const info = utilities.getVolumeViewportScrollInfo(vp, VOLUME_ID);
-    if (info.numScrollSteps <= 1) return 0;
-    // UV origin is bottom-left; convert to "top-left = 0, bottom-right = 1".
-    const t = THREE.MathUtils.clamp((uv.x + (1 - uv.y)) / 2, 0, 1);
-    return Math.round(t * (info.numScrollSteps - 1));
-  } catch {
-    return null;
-  }
-}
-
-function requestViewportSliceJump(panel: ViewPanel, imageIndex: number): void {
+function requestPanelSliceJump(panel: ViewPanel, imageIndex: number): void {
   const idx = Math.max(0, Math.trunc(imageIndex));
-  if (panel.scrubInFlight) {
-    panel.scrubQueuedIndex = idx;
+  if (panel.sliceJumpInFlight) {
+    panel.sliceJumpQueued = idx;
     return;
   }
-  panel.scrubInFlight = true;
-  panel.scrubQueuedIndex = null;
-  panel.scrubLastIndex = idx;
+  panel.sliceJumpInFlight = true;
+  panel.sliceJumpQueued = null;
+  panel.sliceLastIndex = idx;
   void utilities.jumpToSlice(panel.domEl as HTMLDivElement, { imageIndex: idx, volumeId: VOLUME_ID })
     .then(() => {
       (gRE as any)?._needsRender?.add(panel.vpId);
       gDashboardDirty = true;
     })
-    .catch((err) => {
-      console.warn('[DICOM XR] viewport drag scrub failed:', err);
-    })
+    .catch(() => { /* ignore */ })
     .finally(() => {
-      panel.scrubInFlight = false;
-      const queued = panel.scrubQueuedIndex;
-      panel.scrubQueuedIndex = null;
-      if (queued !== null && queued !== panel.scrubLastIndex) {
-        requestViewportSliceJump(panel, queued);
+      panel.sliceJumpInFlight = false;
+      const queued = panel.sliceJumpQueued;
+      panel.sliceJumpQueued = null;
+      if (queued !== null && queued !== panel.sliceLastIndex) {
+        requestPanelSliceJump(panel, queued);
       }
     });
 }
 
-function applyViewportScrubFromUv(panel: ViewPanel, uv?: THREE.Vector2): void {
-  if (!uv) return;
-  const idx = sliceIndexFromViewportUv(panel, uv);
-  if (idx === null || idx === panel.scrubLastIndex) return;
-  requestViewportSliceJump(panel, idx);
+function applySliceStripUv(panel: ViewPanel, uv?: THREE.Vector2): void {
+  if (!gRE) return;
+  const frac = sliceFractionFromStripUv(uv);
+  if (frac === null) return;
+  try {
+    const vp = gRE.getViewport(panel.vpId) as Types.IVolumeViewport;
+    const info = utilities.getVolumeViewportScrollInfo(vp, VOLUME_ID);
+    if (info.numScrollSteps <= 1) return;
+    const idx = Math.round(frac * (info.numScrollSteps - 1));
+    if (idx === panel.sliceLastIndex) return;
+    requestPanelSliceJump(panel, idx);
+  } catch { /* viewport not ready */ }
 }
 
 function xrCacheSetProgress(msg: string): void {
@@ -366,7 +364,6 @@ async function runXRCacheRebuild(): Promise<void> {
   try {
     await rebuildDicomHttpCache(gXRRebuildImageIds, xrCacheSetProgress);
   } catch (e) {
-    console.error(e);
     const p = document.getElementById('xr-progress');
     if (p) {
       p.textContent = e instanceof Error ? e.message : String(e);
@@ -383,7 +380,7 @@ async function runXRCacheRebuild(): Promise<void> {
 // ── ECS System: blit Cornerstone canvases + thumbstick slice-scroll ───────────
 
 class DicomSystem extends createSystem({}) {
-  update(delta: number, _time: number) {
+  update(_delta: number, _time: number) {
     const sliceStates = getSliceStates();
 
     // ── Main dashboard: center-top drag handle drives position + rotation ─────
@@ -440,16 +437,20 @@ class DicomSystem extends createSystem({}) {
         ss?.total ?? 0,
       );
       panel.headerTexture.needsUpdate = true;
+      redrawPanelSliceStrip(
+        panel.sliderCtx,
+        panel.view,
+        ss?.current ?? 1,
+        ss?.total ?? 0,
+      );
+      panel.sliderTexture.needsUpdate = true;
     }
 
     // ── Dashboard redraw ──────────────────────────────────────────────────────
-    if (gDashboardDirty && gDashCtx && gDashTexture && gDashMeta && gOpenViews) {
+    if (gDashboardDirty && gDashCtx && gDashTexture && gDashMeta) {
       gDashboardDirty = false;
-      const { openBtnRects, sliderRects, cacheBtnRects } = drawDashboard(
-        gDashCtx, gDashMeta, gOpenViews, sliceStates,
-      );
-      gOpenBtnRects  = openBtnRects;
-      gSliderRects   = sliderRects;
+      const { exitXrRect, cacheBtnRects } = drawDashboard(gDashCtx, gDashMeta);
+      gExitXrRect    = exitXrRect;
       gCacheBtnRects = cacheBtnRects;
       gDashTexture.needsUpdate = true;
     }
@@ -480,31 +481,6 @@ class DicomSystem extends createSystem({}) {
       }
     }
 
-    // ── Thumbstick slice scrolling ────────────────────────────────────────────
-    if (!gHoveredView || !gRE) return;
-    const gp = this.input.gamepads.right ?? this.input.gamepads.left;
-    if (!gp) return;
-    const axes = gp.getAxesValues('xr-standard-thumbstick');
-    if (!axes || Math.abs(axes.y) < 0.25) { gScrollAccum = 0; return; }
-
-    gScrollAccum += -axes.y * delta * 18;
-    const steps = Math.trunc(gScrollAccum);
-    if (steps === 0) return;
-    gScrollAccum -= steps;
-
-    try {
-      const vp  = gRE.getViewport(gHoveredView.vpId) as Types.IVolumeViewport;
-      const cam = vp.getCamera();
-      const n   = cam.viewPlaneNormal!;
-      const fp  = cam.focalPoint!;
-      vp.setCamera({
-        focalPoint: [fp[0] + n[0] * steps, fp[1] + n[1] * steps, fp[2] + n[2] * steps],
-      });
-      // Mark viewport dirty — _renderFlaggedViewports() above will pick it up
-      // next frame (or this frame if scroll happens before the blit block).
-      (gRE as any)._needsRender.add(gHoveredView.vpId);
-      gDashboardDirty = true;
-    } catch { /* viewport might not be ready yet */ }
   }
 }
 
@@ -527,19 +503,8 @@ function rrect(
   ctx.closePath();
 }
 
-type BtnRect = {
-  view: PlaneId;
-  x: number; y: number; w: number; h: number;
-};
-
-type SliderRect = {
-  view: PlaneId;
-  trackX: number; trackY: number; trackW: number; trackH: number;
-};
-
 type DashRects = {
-  openBtnRects: BtnRect[];
-  sliderRects: SliderRect[];
+  exitXrRect: { x: number; y: number; w: number; h: number } | null;
   cacheBtnRects: CacheBtnRect[];
 };
 
@@ -619,13 +584,11 @@ function drawPillButton(
 }
 
 /**
- * Redraws the full dashboard canvas (layout aligned with index.html).
+ * Redraws the XR dashboard canvas (metadata, cache, exit — no per-plane controls).
  */
 function drawDashboard(
   ctx: CanvasRenderingContext2D,
   meta: DicomStudyMeta,
-  openViews: Set<string>,
-  sliceStates: Map<string, { current: number; total: number }>,
 ): DashRects {
   const W = DASH_CW;
   const H = DASH_CH;
@@ -743,119 +706,16 @@ function drawDashboard(
     );
   }
 
-  // ── view cards (stacked, index-style) ──
-  const boxX = padX;
-  const boxW = W - padX * 2;
-  const boxH = 172;
-  const boxGap = 12;
-  const boxesY0 = cacheTop + cacheH + 16;
-  const headH = 64;
-  const openBtnW = 148;
-  const openBtnH = 46;
+  // ── Exit XR (full-width pill below cache) ──
+  const exitY = cacheTop + cacheH + 28;
+  const exitH = 52;
+  const exitX = padX;
+  const exitW = W - padX * 2;
+  ctx.font = 'bold 24px system-ui, sans-serif';
+  drawPillButton(ctx, exitX, exitY, exitW, exitH, XR_BTN_EXIT, '#ef4444', true);
+  const exitXrRect = { x: exitX, y: exitY, w: exitW, h: exitH };
 
-  const openBtnRects: BtnRect[] = [];
-  const sliderRects: SliderRect[] = [];
-
-  PLANE_IDS.forEach((view, i) => {
-    const by = boxesY0 + i * (boxH + boxGap);
-    const isOpen = openViews.has(view);
-    const col = VIEW_COLORS_HEX[view];
-    const ss = sliceStates.get(view);
-
-    ctx.fillStyle = isOpen ? col + '1e' : '#1a2028';
-    rrect(ctx, boxX, by, boxW, boxH, 18);
-    ctx.fill();
-    ctx.strokeStyle = isOpen ? col : '#2d3744';
-    ctx.lineWidth = isOpen ? 2.5 : 1.5;
-    rrect(ctx, boxX, by, boxW, boxH, 18);
-    ctx.stroke();
-
-    ctx.fillStyle = isOpen ? col : '#4a5260';
-    ctx.beginPath();
-    ctx.arc(boxX + 26, by + headH / 2, 12, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Name
-    ctx.fillStyle = isOpen ? col : '#e6e6e6';
-    ctx.font = 'bold 34px system-ui, sans-serif';
-    ctx.textAlign = 'left';
-    ctx.fillText(VIEW_LABELS[view], boxX + 52, by + 42);
-
-    // State (between name and Open)
-    ctx.fillStyle = isOpen ? col : '#8a919b';
-    ctx.font = '22px system-ui, sans-serif';
-    ctx.textAlign = 'left';
-    ctx.fillText(isOpen ? 'Panel open' : 'Closed', boxX + 52 + 160, by + 40);
-
-    // Open / Close button (hit target)
-    const obx = boxX + boxW - 18 - openBtnW;
-    const oby = by + 9;
-    const openLabel = isOpen ? 'Close' : 'Open';
-    drawPillButton(ctx, obx, oby, openBtnW, openBtnH, openLabel, col, true);
-    openBtnRects.push({ view, x: obx, y: oby, w: openBtnW, h: openBtnH });
-
-    ctx.fillStyle = '#2a323d';
-    ctx.fillRect(boxX + 16, by + headH, boxW - 32, 1);
-
-    const trackX = boxX + 22;
-    const trackY = by + headH + 56;
-    const trackW = boxW - 44;
-    const trackH = 32;
-
-    if (isOpen && ss) {
-      const fraction = ss.total > 1 ? (ss.current - 1) / (ss.total - 1) : 0;
-
-      ctx.fillStyle = '#8a919b';
-      ctx.font = '24px system-ui, sans-serif';
-      ctx.textAlign = 'left';
-      ctx.fillText('Slice', boxX + 22, by + headH + 36);
-      ctx.fillStyle = col;
-      ctx.font = 'bold 24px system-ui, sans-serif';
-      ctx.textAlign = 'right';
-      ctx.fillText(`${ss.current} / ${ss.total}`, boxX + boxW - 22, by + headH + 36);
-      ctx.textAlign = 'left';
-
-      ctx.fillStyle = '#2a323d';
-      rrect(ctx, trackX, trackY, trackW, trackH, 16);
-      ctx.fill();
-
-      const fillW = Math.max(trackH, fraction * trackW);
-      ctx.fillStyle = col + 'aa';
-      rrect(ctx, trackX, trackY, fillW, trackH, 16);
-      ctx.fill();
-
-      const thumbCx = trackX + fraction * trackW;
-      const thumbCy = trackY + trackH / 2;
-      ctx.fillStyle = col;
-      ctx.beginPath();
-      ctx.arc(thumbCx, thumbCy, 15, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = '#fff';
-      ctx.beginPath();
-      ctx.arc(thumbCx, thumbCy, 6, 0, Math.PI * 2);
-      ctx.fill();
-
-      sliderRects.push({ view, trackX, trackY, trackW, trackH });
-    } else {
-      ctx.fillStyle = '#8a919b';
-      ctx.font = '24px system-ui, sans-serif';
-      ctx.textAlign = 'left';
-      ctx.fillText('Slice', boxX + 22, by + headH + 36);
-      ctx.fillStyle = '#4a5260';
-      ctx.textAlign = 'right';
-      ctx.fillText('— / —', boxX + boxW - 22, by + headH + 36);
-
-      ctx.fillStyle = '#2a323d';
-      rrect(ctx, trackX, trackY, trackW, trackH, 16);
-      ctx.fill();
-      ctx.fillStyle = '#4a5260';
-      ctx.font = '22px system-ui, sans-serif';
-      ctx.textAlign = 'center';
-      ctx.fillText(isOpen ? 'Loading…' : 'Open to use slider', boxX + boxW / 2, trackY + 22);
-    }
-  });
-
-  return { openBtnRects, sliderRects, cacheBtnRects };
+  return { exitXrRect, cacheBtnRects };
 }
 
 /** Title bar: plane name (left) and slice index / count (right). */
@@ -886,6 +746,76 @@ function redrawViewPanelHeader(
   ctx.font      = 'bold 22px system-ui, sans-serif';
   ctx.textAlign = 'right';
   ctx.fillText(readout, VIEW_HEADER_PX_W - 14, 32);
+}
+
+/** Vertical slice strip drawn beside each view panel (matches {@link sliceFractionFromStripUv}). */
+function redrawPanelSliceStrip(
+  ctx: CanvasRenderingContext2D,
+  view: PlaneId,
+  current: number,
+  total: number,
+): void {
+  const col = VIEW_COLORS_HEX[view];
+  const W = SLIDER_PX_W;
+  const H = SLIDER_PX_H;
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#0d1117';
+  rrect(ctx, 0, 0, W, H, 10);
+  ctx.fill();
+  ctx.strokeStyle = col + '55';
+  ctx.lineWidth = 1.5;
+  rrect(ctx, 0, 0, W, H, 10);
+  ctx.stroke();
+
+  const padX = 10;
+  const padY = 14;
+  const trackX = padX;
+  const trackW = W - padX * 2;
+  const trackY = padY;
+  const trackH = H - padY * 2;
+
+  ctx.fillStyle = '#1e2630';
+  rrect(ctx, trackX, trackY, trackW, trackH, 12);
+  ctx.fill();
+
+  if (total <= 1) {
+    ctx.fillStyle = '#5c6570';
+    ctx.font = '600 16px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.save();
+    ctx.translate(W / 2, H / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.fillText(total === 1 ? '1 slice' : '—', 0, 0);
+    ctx.restore();
+    return;
+  }
+
+  const fraction = THREE.MathUtils.clamp((current - 1) / (total - 1), 0, 1);
+  const fillH = Math.max(10, fraction * trackH);
+  const fillTop = trackY + trackH - fillH;
+  ctx.fillStyle = col + '99';
+  rrect(ctx, trackX, fillTop, trackW, fillH, 12);
+  ctx.fill();
+
+  const thumbCy = trackY + trackH - fraction * trackH;
+  const thumbCx = trackX + trackW / 2;
+  ctx.fillStyle = col;
+  ctx.beginPath();
+  ctx.arc(thumbCx, thumbCy, 11, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.beginPath();
+  ctx.arc(thumbCx, thumbCy, 4, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = 'rgba(0,0,0,0.45)';
+  ctx.font = '600 14px system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.save();
+  ctx.translate(W / 2, padY - 2);
+  ctx.rotate(-Math.PI / 2);
+  ctx.fillText('SLICE', 0, 0);
+  ctx.restore();
 }
 
 /** Four-direction move icon (arrows along ±x / ±y) at (cx, cy). */
@@ -1034,6 +964,23 @@ async function openViewPanel(world: World, view: PlaneId): Promise<void> {
     new THREE.MeshBasicMaterial({ map: texture, side: THREE.DoubleSide }),
   );
 
+  const sliderCanvas = document.createElement('canvas');
+  sliderCanvas.width  = SLIDER_PX_W;
+  sliderCanvas.height = SLIDER_PX_H;
+  const sliderCtx = sliderCanvas.getContext('2d')!;
+  redrawPanelSliceStrip(sliderCtx, view, 1, 0);
+  const sliderTexture = new THREE.CanvasTexture(sliderCanvas);
+  const sliderMesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(SLIDER_STRIP_W_M, PANEL_H),
+    new THREE.MeshBasicMaterial({ map: sliderTexture, side: THREE.DoubleSide }),
+  );
+  sliderMesh.position.set(
+    PANEL_W / 2 + SLIDER_VIEWPORT_GAP_M + SLIDER_STRIP_W_M / 2,
+    0,
+    0.004,
+  );
+  (sliderMesh as any).pointerEventsType = 'all';
+
   const headerCanvas = document.createElement('canvas');
   headerCanvas.width  = VIEW_HEADER_PX_W;
   headerCanvas.height = VIEW_HEADER_PX_H;
@@ -1049,6 +996,7 @@ async function openViewPanel(world: World, view: PlaneId): Promise<void> {
 
   const group = new THREE.Group();
   group.add(viewportMesh);
+  group.add(sliderMesh);
   group.add(headerMesh);
 
   placePanelOnArc(group, view);
@@ -1090,67 +1038,48 @@ async function openViewPanel(world: World, view: PlaneId): Promise<void> {
     dragHandleEntity, resizeHandleEntity,
     lastResizePos: initResizePos.clone(),
     headerCanvas, headerCtx, headerTexture: headerTex,
-    scrubPointerId: null,
-    scrubLastIndex: -1,
-    scrubInFlight: false,
-    scrubQueuedIndex: null,
+    sliderCanvas, sliderCtx, sliderTexture,
+    sliceStripPointerId: null,
+    sliceJumpInFlight: false,
+    sliceJumpQueued: null,
+    sliceLastIndex: -1,
   };
 
-  viewportMesh.addEventListener('pointerenter', () => { gHoveredView = panel; });
-  viewportMesh.addEventListener('pointerleave', () => {
-    if (gHoveredView === panel) gHoveredView = null;
-    panel.scrubPointerId = null;
+  const stripPointerId = (e: any): number | null =>
+    typeof e.pointerId === 'number' ? e.pointerId : null;
+
+  sliderMesh.addEventListener('pointerdown', (e: any) => {
+    panel.sliceStripPointerId = stripPointerId(e);
+    applySliceStripUv(panel, e.uv as THREE.Vector2 | undefined);
   });
-  viewportMesh.addEventListener('pointerdown', (e: any) => {
-    panel.scrubPointerId = typeof e.pointerId === 'number' ? e.pointerId : null;
-    applyViewportScrubFromUv(panel, e.uv as THREE.Vector2 | undefined);
+  sliderMesh.addEventListener('pointermove', (e: any) => {
+    if (panel.sliceStripPointerId === null) return;
+    const pid = stripPointerId(e);
+    if (pid !== null && panel.sliceStripPointerId !== pid) return;
+    applySliceStripUv(panel, e.uv as THREE.Vector2 | undefined);
   });
-  viewportMesh.addEventListener('pointermove', (e: any) => {
-    const pid = typeof e.pointerId === 'number' ? e.pointerId : null;
-    if (panel.scrubPointerId !== null && pid !== null && panel.scrubPointerId !== pid) return;
-    applyViewportScrubFromUv(panel, e.uv as THREE.Vector2 | undefined);
-  });
-  const endScrub = (e: any): void => {
-    const pid = typeof e.pointerId === 'number' ? e.pointerId : null;
-    if (panel.scrubPointerId !== null && pid !== null && panel.scrubPointerId !== pid) return;
-    panel.scrubPointerId = null;
+  const endStrip = (e: any): void => {
+    const pid = stripPointerId(e);
+    if (panel.sliceStripPointerId !== null && pid !== null && panel.sliceStripPointerId !== pid) return;
+    panel.sliceStripPointerId = null;
   };
-  viewportMesh.addEventListener('pointerup', endScrub);
-  viewportMesh.addEventListener('pointercancel', endScrub);
+  sliderMesh.addEventListener('pointerup', endStrip);
+  sliderMesh.addEventListener('pointercancel', endStrip);
 
   gPanels.set(view, panel);
 }
 
-function closeViewPanel(view: PlaneId): void {
-  const panel = gPanels.get(view);
-  if (!panel) return;
-
-  if (gHoveredView === panel) gHoveredView = null;
-  panel.scrubPointerId = null;
-
-  panel.entity.destroy();
-  panel.dragHandleEntity.destroy();
-  panel.resizeHandleEntity.destroy();
-  try { gRE?.disableElement(panel.vpId); } catch { /* ignore */ }
-  document.body.removeChild(panel.domEl);
-  panel.texture.dispose();
-  panel.headerTexture.dispose();
-
-  gPanels.delete(view);
-}
-
 // ── Dashboard factory ─────────────────────────────────────────────────────────
 
-async function createDashboard(
+function createDashboard(
   world: World,
   imageId: string,
   nSlices: number,
-): Promise<THREE.Mesh> {
+): THREE.Mesh {
   const meta = getDicomStudyMeta(imageId, nSlices);
 
   // Store references so DicomSystem can redraw the dashboard
   gDashMeta   = meta;
-  gOpenViews  = new Set<string>();
 
   const canvas = document.createElement('canvas');
   canvas.width  = DASH_CW;
@@ -1158,12 +1087,8 @@ async function createDashboard(
   const ctx = canvas.getContext('2d')!;
   gDashCtx = ctx;
 
-  // Initial draw (no panels open yet, empty slice states)
-  const { openBtnRects, sliderRects, cacheBtnRects } = drawDashboard(
-    ctx, meta, gOpenViews, new Map(),
-  );
-  gOpenBtnRects  = openBtnRects;
-  gSliderRects   = sliderRects;
+  const { exitXrRect, cacheBtnRects } = drawDashboard(ctx, meta);
+  gExitXrRect    = exitXrRect;
   gCacheBtnRects = cacheBtnRects;
 
   const texture = new THREE.CanvasTexture(canvas);
@@ -1206,15 +1131,22 @@ async function createDashboard(
 
   // ── Input event handling ──
   // A quick trigger tap (< 300 ms) synthesises a 'click' event via
-  // @pmndrs/pointer-events regardless of grab state, so we only need a
-  // single click handler for both toggle buttons and slider click-to-jump.
+  // @pmndrs/pointer-events regardless of grab state.
 
-  mesh.addEventListener('click', async (e: any) => {
+  mesh.addEventListener('click', (e: any) => {
     const uv = e.uv as THREE.Vector2 | undefined;
     if (!uv) return;
     // UV V=0 is texture bottom; canvas Y=0 is top → flip V
     const cx = uv.x * DASH_CW;
     const cy = (1 - uv.y) * DASH_CH;
+
+    if (gExitXrRect) {
+      const r = gExitXrRect;
+      if (cx >= r.x && cx <= r.x + r.w && cy >= r.y && cy <= r.y + r.h) {
+        world.exitXR();
+        return;
+      }
+    }
 
     for (const cr of gCacheBtnRects) {
       if (cx >= cr.x && cx <= cr.x + cr.w && cy >= cr.y && cy <= cr.y + cr.h) {
@@ -1224,31 +1156,6 @@ async function createDashboard(
       }
     }
 
-    for (const rect of gOpenBtnRects) {
-      if (cx >= rect.x && cx <= rect.x + rect.w && cy >= rect.y && cy <= rect.y + rect.h) {
-        const { view } = rect;
-        if (gPanels.has(view)) {
-          gOpenViews!.delete(view);
-          closeViewPanel(view);
-        } else {
-          await openViewPanel(world, view);
-          gOpenViews!.add(view);
-        }
-        gDashboardDirty = true;
-        return;
-      }
-    }
-
-    for (const sr of gSliderRects) {
-      if (
-        cx >= sr.trackX && cx <= sr.trackX + sr.trackW &&
-        cy >= sr.trackY - 14 && cy <= sr.trackY + sr.trackH + 14
-      ) {
-        const fraction = Math.max(0, Math.min(1, (cx - sr.trackX) / sr.trackW));
-        void handleSliderJump(sr.view, fraction);
-        return;
-      }
-    }
   });
 
   return mesh;
@@ -1287,8 +1194,7 @@ async function loadWebPreviewGlb(world: World): Promise<void> {
   let gltf: Awaited<ReturnType<GLTFLoader['loadAsync']>>;
   try {
     gltf = await loader.loadAsync(url);
-  } catch (e) {
-    console.warn('[DICOM XR] GLB preview not loaded:', url, e);
+  } catch {
     return;
   }
 
@@ -1302,6 +1208,7 @@ async function loadWebPreviewGlb(world: World): Promise<void> {
   root.position.sub(center);
   const maxDim = Math.max(size.x, size.y, size.z, 1e-6);
   root.scale.setScalar(GLB_PREVIEW_MAX_AXIS_M / maxDim);
+  root.rotation.set(0, 0, 0);
 
   // Invisible sphere is the grab/rotate handle; GLB follows as its child.
   const grabHandle = new THREE.Mesh(
@@ -1309,6 +1216,12 @@ async function loadWebPreviewGlb(world: World): Promise<void> {
     new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false }),
   );
   grabHandle.position.copy(GLB_PREVIEW_POS);
+  grabHandle.rotation.set(
+    THREE.MathUtils.degToRad(GLB_PREVIEW_WORLD_YXZ_DEG.x),
+    THREE.MathUtils.degToRad(GLB_PREVIEW_WORLD_YXZ_DEG.y),
+    THREE.MathUtils.degToRad(GLB_PREVIEW_WORLD_YXZ_DEG.z),
+    'YXZ',
+  );
   grabHandle.add(root);
 
   const entity = world.createTransformEntity(grabHandle);
@@ -1431,25 +1344,21 @@ async function main(): Promise<void> {
       if (typeof (gl as any).makeXRCompatible === 'function') {
         await (gl as any).makeXRCompatible();
       }
-    } catch (e) {
-      console.warn('[DICOM XR] makeXRCompatible failed:', e);
-    }
+    } catch { /* ignore */ }
 
     world.registerSystem(DicomSystem);
 
-    await createDashboard(world, imageIds[0], imageIds.length);
+    createDashboard(world, imageIds[0], imageIds.length);
     await loadWebPreviewGlb(world);
 
     for (const view of PLANE_IDS) {
       await openViewPanel(world, view);
-      gOpenViews!.add(view);
     }
     gDashboardDirty = true;
 
     document.getElementById('xr-root')?.classList.add('xr-scene-ready');
     hideOverlay();
   } catch (err) {
-    console.error('[DICOM XR]', err);
     setProgress(`Error: ${err instanceof Error ? err.message : String(err)}`);
     progressEl.style.color = '#ef4444';
   }

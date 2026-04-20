@@ -15,9 +15,7 @@ export function clearSession(): void {
   try {
     localStorage.removeItem(storageKey());
     localStorage.removeItem(LEGACY_KEY);
-  } catch {
-    console.warn('[Session] Failed to clear localStorage');
-  }
+  } catch { /* ignore */ }
 }
 
 export function saveSession(session: DicomSession): void {
@@ -28,9 +26,7 @@ export function saveSession(session: DicomSession): void {
     };
     localStorage.setItem(storageKey(), JSON.stringify(normalized));
     localStorage.removeItem(LEGACY_KEY);
-  } catch {
-    console.warn('[Session] Failed to write to localStorage');
-  }
+  } catch { /* ignore */ }
 }
 
 export function loadSession(): DicomSession | null {

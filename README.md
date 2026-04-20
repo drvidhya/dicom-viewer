@@ -1,6 +1,6 @@
 # DICOM Viewer
 
-[Visit live website](https://nparashuram.github.io/dicom-viewer/)
+[Visit live website](https://drvidhya.github.io/dicom-viewer/)
 
 Web-based CT/MR-style stack viewer built with [Cornerstone3D](https://www.cornerstonejs.org/): dashboard plus separate Axial / Sagittal / Coronal windows, optional **WebXR** mode (`xr.html`), and a small service worker cache for DICOM GETs (URLs whose path contains `dicom/data/`) on HTTPS.
 

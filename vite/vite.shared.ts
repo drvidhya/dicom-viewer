@@ -215,6 +215,7 @@ export function createDicomViewerViteConfig(dev: DicomViewerDevOptions): UserCon
         input: {
           main: path.resolve(process.cwd(), 'index.html'),
           xr:   path.resolve(process.cwd(), 'xr.html'),
+          modelviewer: path.resolve(process.cwd(), 'modelviewer.html'),
         },
       },
     },

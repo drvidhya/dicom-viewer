@@ -40,7 +40,13 @@ const VOLUME_ID = 'cornerstoneStreamingImageVolume:dicomVolume';
 const RENDERING_ENGINE_ID = 'dicomRE';
 const VIEWPORT_ID = 'vp-main';
 
-const viewParam = new URLSearchParams(window.location.search).get('view') as PlaneId | null;
+function parseViewQuery(): PlaneId | null {
+  const raw = new URLSearchParams(window.location.search).get('view');
+  if (!raw) return null;
+  return (PLANE_IDS as readonly string[]).includes(raw) ? (raw as PlaneId) : null;
+}
+
+const viewParam = parseViewQuery();
 const isViewer = viewParam !== null;
 
 // ── Dashboard + popup viewers (BroadcastChannel — no shared Cornerstone heap) ─
@@ -78,8 +84,12 @@ function setupViewCards(nFrames: number) {
     slider.value = '1';
 
     openBtn.addEventListener('click', () => {
+      // Resolve against the current document URL (not pathname alone) so nested
+      // paths and non-root deployments open this app, not the site root.
+      const u = new URL(window.location.href);
+      u.searchParams.set('view', view);
       window.open(
-        `${window.location.pathname}?view=${view}`,
+        u.href,
         `dicom-${view}`,
         'width=1000,height=800,menubar=no,toolbar=no',
       );
@@ -473,7 +483,7 @@ async function runViewer(view: PlaneId) {
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
-(isViewer ? runViewer(viewParam!) : runDashboard()).catch((err) => {
+(isViewer ? runViewer(viewParam) : runDashboard()).catch((err) => {
   showError(err instanceof Error ? err.message : String(err));
 });
 

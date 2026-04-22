@@ -17,6 +17,7 @@ import {
   OneHandGrabbable,
   TwoHandsGrabbable,
   Interactable,
+  Pressed,
   createSystem,
   SessionMode,
 } from '@iwsdk/core';
@@ -74,6 +75,11 @@ const PANEL_H    = 0.65;  // viewport panel height (metres)
 /** Longest axis of the isosurface after scaling — strictly smaller than a viewport panel. */
 const GLB_PREVIEW_MAX_AXIS_M = Math.min(PANEL_W, PANEL_H) * 0.4;
 const GLB_GRAB_HIT_RADIUS_M = GLB_PREVIEW_MAX_AXIS_M * 0.75;
+const SLICE_PLANE_OPACITY = 0.28;
+/** Opacity for the slice plane last clicked (easier to see + confirms hit). */
+const SLICE_PLANE_OPACITY_ACTIVE = 0.62;
+/** Plane mesh width/height vs fitted AABB (larger = easier ray hits than the isosurface). */
+const SLICE_PLANE_VISUAL_SCALE = 1.5;
 const HEADER_H   = 0.065; // title-bar height      (metres)
 const CANVAS_PX  = 512;   // Cornerstone canvas pixel size
 /** When slice indices are unchanged, still blit Cornerstone at this interval (ms) so W/L updates appear. */
@@ -120,7 +126,8 @@ const DASH_GAP_ABOVE_CORONAL_M = 0.06;
 /**
  * Isosurface GLB grab origin (metres), tuned in XR; values rounded from measured world/local pose.
  */
-const GLB_PREVIEW_POS = new THREE.Vector3(-0.11, 0.2, -0.28);
+/** Grab-handle local position for the preview mesh (tuned in XR). */
+const GLB_PREVIEW_POS = new THREE.Vector3(-0.017249, 0.877749, -0.575167);
 
 /**
  * Default orientation for the preview mesh in world space (degrees, Euler order YXZ).
@@ -153,6 +160,10 @@ type CacheBtnRect = {
 
 let gRE: RenderingEngine | null       = null;
 let gVoiRange = { lower: -500, upper: 500 };
+let gGlbRootObj: THREE.Object3D | null = null;
+/** GLB root + slice planes parent (for world ↔ local). */
+let gGlbModelPivotObj: THREE.Object3D | null = null;
+const _sliceWorldScratch = new THREE.Vector3();
 
 // Dashboard redraw state
 let gDashCtx:     CanvasRenderingContext2D | null = null;
@@ -206,6 +217,18 @@ type ViewPanel = {
   lastPaintedSliceKey: string;
 };
 
+type SlicePlane = {
+  view: PlaneId;
+  entity: ReturnType<World['createEntity']>;
+  /**
+   * When true: Cornerstone slice 1 (first) sits at bounds.max on this axis, last slice at bounds.min.
+   */
+  highEndIsFirstSlice: boolean;
+  /** Local rotation under the pivot (world-locked slice plane vs room axes). */
+  baseQuat: THREE.Quaternion;
+  lastRequestedIndex: number;
+};
+
 // Local offsets from panel center to each handle (at scale 1.0).
 // Drag: center top. World position = panelPos + rotateLocal(offset * scale).
 const DRAG_HANDLE_TOP_MARGIN = 0.03;
@@ -228,6 +251,27 @@ const _tmpResizeDir = new THREE.Vector3();
 const _tmpDragCorner = new THREE.Vector3();
 const _tmpRhCorner   = new THREE.Vector3();
 const _tmpResizeDelta = new THREE.Vector3();
+
+/** Last good `numScrollSteps` per view (Cornerstone sometimes throws briefly in XR). */
+const gSliceScrollTotalCache = new Map<PlaneId, number>();
+
+function applySlicePlaneOpacityHighlight(active: PlaneId | null): void {
+  for (const [view, plane] of gSlicePlanes) {
+    const mesh = plane.entity.object3D as THREE.Mesh;
+    const mat = mesh.material as THREE.MeshBasicMaterial;
+    mat.opacity = view === active ? SLICE_PLANE_OPACITY_ACTIVE : SLICE_PLANE_OPACITY;
+  }
+}
+
+/**
+ * GrabSystem sets `pointerEventsType = { deny: 'ray' }` on OneHandGrabbable targets, which blocks
+ * XR controller rays. Slice planes must allow rays so grabs + our pointer listeners work.
+ */
+function ensureSlicePlanePointerEventsForRays(): void {
+  for (const plane of gSlicePlanes.values()) {
+    (plane.entity.object3D as any).pointerEventsType = 'all';
+  }
+}
 
 let gPrevSliceSnapshot = '';
 let gLastCornerstoneBlitMs = 0;
@@ -252,6 +296,7 @@ function scaledLocalOffsetWorld(
 }
 
 const gPanels = new Map<string, ViewPanel>();
+const gSlicePlanes = new Map<PlaneId, SlicePlane>();
 
 // ── Cornerstone slice-state helpers ──────────────────────────────────────────
 
@@ -262,12 +307,280 @@ function fillSliceStates(out: Map<string, { current: number; total: number }>): 
     const panel = gPanels.get(view);
     if (!panel) continue;
     try {
-      const vp   = gRE.getViewport(panel.vpId) as Types.IVolumeViewport;
-      const info = utilities.getVolumeViewportScrollInfo(vp, VOLUME_ID);
-      out.set(view, { current: info.currentStepIndex + 1, total: info.numScrollSteps });
-    } catch { /* viewport not ready yet */ }
+      const vp = gRE.getViewport(panel.vpId) as Types.IVolumeViewport;
+      /** Same source as `jumpToSlice` / `getSliceIndex` — *not* `getVolumeViewportScrollInfo.numScrollSteps` (often off by steps). */
+      const sliceData = utilities.getImageSliceDataForVolumeViewport(vp as Types.IVolumeViewport);
+      if (sliceData && sliceData.numberOfSlices >= 1) {
+        const total = sliceData.numberOfSlices;
+        const idx0 = Math.max(0, Math.min(total - 1, sliceData.imageIndex));
+        gSliceScrollTotalCache.set(view, total);
+        out.set(view, { current: idx0 + 1, total });
+      } else {
+        const info = utilities.getVolumeViewportScrollInfo(vp, VOLUME_ID);
+        if (info.numScrollSteps > 0) {
+          gSliceScrollTotalCache.set(view, info.numScrollSteps);
+        }
+        out.set(view, { current: info.currentStepIndex + 1, total: info.numScrollSteps });
+      }
+    } catch {
+      const cachedTotal = gSliceScrollTotalCache.get(view);
+      if (cachedTotal !== undefined && cachedTotal > 0) {
+        const cur = panel.sliceLastIndex >= 0 ? panel.sliceLastIndex + 1 : 1;
+        out.set(view, { current: cur, total: cachedTotal });
+      }
+    }
   }
   return out;
+}
+
+const _planeGeomZ = new THREE.Vector3(0, 0, 1);
+const _qwPivot = new THREE.Quaternion();
+const _qwPlane = new THREE.Quaternion();
+const _qwInvPivot = new THREE.Quaternion();
+
+/** World-locked plane orientation: mesh is under `pivot`, so local quat = inv(pivotWorld) * planeWorld. */
+function setSlicePlaneLocalRotationWorldLocked(
+  mesh: THREE.Object3D,
+  pivot: THREE.Object3D,
+  worldNormal: THREE.Vector3,
+): void {
+  _qwPlane.setFromUnitVectors(_planeGeomZ, worldNormal);
+  pivot.getWorldQuaternion(_qwPivot);
+  _qwInvPivot.copy(_qwPivot).invert();
+  mesh.quaternion.copy(_qwInvPivot).multiply(_qwPlane);
+}
+
+/**
+ * MPR plane normals in **world** space (Three.js Y-up). Plane mesh +Z is mapped to this normal.
+ */
+const XR_SLICE_PLANE_WORLD_NORMAL: Record<PlaneId, THREE.Vector3> = {
+  axial: new THREE.Vector3(0, 1, 0),
+  sagittal: new THREE.Vector3(1, 0, 0),
+  coronal: new THREE.Vector3(0, 0, 1),
+};
+
+/**
+ * World axis (0=x, 1=y, 2=z) each view **slides along**. Axial = top↔bottom (Y); sagittal/coronal
+ * slide along X / Z with vertical planes — simple and matches radiologic layout in Y-up scenes.
+ */
+const XR_SLICE_SCROLL_AXIS: Record<PlaneId, 0 | 1 | 2> = {
+  axial: 1,
+  sagittal: 0,
+  coronal: 2,
+};
+
+/**
+ * Per-orientation: whether slice index 1 is at the high end of the model AABB on that axis.
+ * Sagittal/coronal left false unless volume scroll direction disagrees with mesh bounds.
+ */
+const SLICE_HIGH_END_IS_FIRST: Record<PlaneId, boolean> = {
+  axial: true,
+  sagittal: false,
+  coronal: false,
+};
+
+function fracFromSlice(current: number, total: number): number {
+  if (total <= 1) return 0;
+  return THREE.MathUtils.clamp((current - 1) / (total - 1), 0, 1);
+}
+
+function axisValueFromSlice(
+  current: number,
+  total: number,
+  min: number,
+  max: number,
+  highEndIsFirstSlice: boolean,
+): number {
+  const frac = fracFromSlice(current, total);
+  if (highEndIsFirstSlice) {
+    return THREE.MathUtils.lerp(max, min, frac);
+  }
+  return THREE.MathUtils.lerp(min, max, frac);
+}
+
+function sliceIndexFromAxis(
+  value: number,
+  total: number,
+  min: number,
+  max: number,
+  highEndIsFirstSlice: boolean,
+): number {
+  if (total <= 1 || Math.abs(max - min) < 1e-6) return 0;
+  const span = max - min;
+  const frac = highEndIsFirstSlice
+    ? THREE.MathUtils.clamp((max - value) / span, 0, 1)
+    : THREE.MathUtils.clamp((value - min) / span, 0, 1);
+  return Math.round(frac * (total - 1));
+}
+
+/** World-space point: AABB center on X/Z (or the two non-scroll axes), slice depth on scroll axis. */
+function slicePlaneWorldPositionFromBox(
+  box: THREE.Box3,
+  scrollAxis: 0 | 1 | 2,
+  scrollCoord: number,
+  out: THREE.Vector3,
+): THREE.Vector3 {
+  out.copy(box.getCenter(new THREE.Vector3()));
+  out.setComponent(scrollAxis, scrollCoord);
+  return out;
+}
+
+function syncSlicePlanesFromSliceState(
+  sliceStates: Map<string, { current: number; total: number }>,
+): void {
+  const root = gGlbRootObj;
+  const pivot = gGlbModelPivotObj;
+  if (!root || !pivot) return;
+  root.updateMatrixWorld(true);
+  pivot.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(root, true);
+  for (const plane of gSlicePlanes.values()) {
+    const obj = plane.entity.object3D!;
+    if (plane.entity.hasComponent(Pressed)) continue;
+    const ss = sliceStates.get(plane.view);
+    if (!ss || ss.total < 1) continue;
+
+    const ax = XR_SLICE_SCROLL_AXIS[plane.view];
+    const minW = box.min.getComponent(ax);
+    const maxW = box.max.getComponent(ax);
+    const coordW = axisValueFromSlice(
+      ss.current,
+      ss.total,
+      minW,
+      maxW,
+      plane.highEndIsFirstSlice,
+    );
+
+    slicePlaneWorldPositionFromBox(box, ax, coordW, _sliceWorldScratch);
+    obj.position.copy(_sliceWorldScratch);
+    pivot.worldToLocal(obj.position);
+
+    setSlicePlaneLocalRotationWorldLocked(obj, pivot, XR_SLICE_PLANE_WORLD_NORMAL[plane.view]);
+    plane.baseQuat.copy(obj.quaternion);
+    plane.lastRequestedIndex = Math.max(0, ss.current - 1);
+  }
+}
+
+function updateDraggedSlicePlanes(
+  sliceStates: Map<string, { current: number; total: number }>,
+): void {
+  const root = gGlbRootObj;
+  const pivot = gGlbModelPivotObj;
+  if (!root || !pivot) return;
+  root.updateMatrixWorld(true);
+  pivot.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(root, true);
+  for (const plane of gSlicePlanes.values()) {
+    if (!plane.entity.hasComponent(Pressed)) continue;
+    const obj = plane.entity.object3D!;
+
+    const ax = XR_SLICE_SCROLL_AXIS[plane.view];
+    const minW = box.min.getComponent(ax);
+    const maxW = box.max.getComponent(ax);
+
+    _sliceWorldScratch.copy(obj.position);
+    pivot.localToWorld(_sliceWorldScratch);
+    const clampedW = THREE.MathUtils.clamp(_sliceWorldScratch.getComponent(ax), minW, maxW);
+    slicePlaneWorldPositionFromBox(box, ax, clampedW, _sliceWorldScratch);
+    pivot.worldToLocal(_sliceWorldScratch);
+    obj.position.copy(_sliceWorldScratch);
+    setSlicePlaneLocalRotationWorldLocked(obj, pivot, XR_SLICE_PLANE_WORLD_NORMAL[plane.view]);
+    plane.baseQuat.copy(obj.quaternion);
+
+    const panel = gPanels.get(plane.view);
+    const ss = sliceStates.get(plane.view);
+    if (!panel || !ss || ss.total <= 1) continue;
+    const idx = sliceIndexFromAxis(
+      clampedW,
+      ss.total,
+      minW,
+      maxW,
+      plane.highEndIsFirstSlice,
+    );
+    if (idx === plane.lastRequestedIndex) continue;
+    plane.lastRequestedIndex = idx;
+    requestPanelSliceJump(panel, idx);
+  }
+}
+
+function clearSlicePlanes(): void {
+  for (const plane of gSlicePlanes.values()) {
+    plane.entity.destroy();
+  }
+  gSlicePlanes.clear();
+}
+
+/**
+ * Slice planes live under `modelPivot` (sibling of `root`) so we never attach an IWSDK Transform
+ * entity to `gltf.scene` — that was hiding planes. ECS parent is `pivotEntity` so planes follow
+ * the grab handle. Each frame, slice depth is taken from the volume index and written as a world
+ * point on the mesh AABB, then converted with `modelPivot.worldToLocal` for the mesh transform.
+ */
+function createSlicePlanes(
+  world: World,
+  modelPivot: THREE.Object3D,
+  root: THREE.Object3D,
+  bounds: THREE.Box3,
+  pivotEntity: ReturnType<World['createTransformEntity']>,
+): void {
+  clearSlicePlanes();
+
+  const size = bounds.getSize(new THREE.Vector3());
+  const ps = SLICE_PLANE_VISUAL_SCALE;
+
+  for (const view of PLANE_IDS) {
+    const col = VIEW_COLORS_HEX[view];
+    const n = XR_SLICE_PLANE_WORLD_NORMAL[view];
+
+    const mesh = new THREE.Mesh(
+      new THREE.PlaneGeometry(1, 1),
+      new THREE.MeshBasicMaterial({
+        color: col,
+        transparent: true,
+        opacity: SLICE_PLANE_OPACITY,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      }),
+    );
+
+    const dims = [size.x * ps, size.y * ps, size.z * ps].sort((a, b) => b - a);
+    mesh.geometry.dispose();
+    mesh.geometry = new THREE.PlaneGeometry(
+      Math.max(dims[0], 1e-4),
+      Math.max(dims[1], 1e-4),
+    );
+
+    modelPivot.add(mesh);
+    root.updateMatrixWorld(true);
+    modelPivot.updateMatrixWorld(true);
+    _sliceWorldScratch.copy(bounds.getCenter(new THREE.Vector3()));
+    mesh.position.copy(_sliceWorldScratch);
+    modelPivot.worldToLocal(mesh.position);
+    setSlicePlaneLocalRotationWorldLocked(mesh, modelPivot, n);
+
+    mesh.renderOrder = 10;
+
+    const entity = world.createTransformEntity(mesh, { parent: pivotEntity });
+    entity.addComponent(Interactable, {});
+    entity.addComponent(OneHandGrabbable, {
+      translate: true,
+      rotate: false,
+    });
+    (entity.object3D as any).pointerEventsType = 'all';
+
+    const plane: SlicePlane = {
+      view,
+      entity,
+      highEndIsFirstSlice: SLICE_HIGH_END_IS_FIRST[view],
+      baseQuat: mesh.quaternion.clone(),
+      lastRequestedIndex: -1,
+    };
+    mesh.addEventListener('pointerdown', () => {
+      applySlicePlaneOpacityHighlight(view);
+    });
+
+    gSlicePlanes.set(view, plane);
+  }
 }
 
 /** Map vertical strip UV to slice fraction (0 = first slice, 1 = last). */
@@ -313,9 +626,14 @@ function applySliceStripUv(panel: ViewPanel, uv?: THREE.Vector2): void {
   if (frac === null) return;
   try {
     const vp = gRE.getViewport(panel.vpId) as Types.IVolumeViewport;
-    const info = utilities.getVolumeViewportScrollInfo(vp, VOLUME_ID);
-    if (info.numScrollSteps <= 1) return;
-    const idx = Math.round(frac * (info.numScrollSteps - 1));
+    const sliceData = utilities.getImageSliceDataForVolumeViewport(vp as Types.IVolumeViewport);
+    let total = sliceData?.numberOfSlices;
+    if (total === undefined || total < 1) {
+      const info = utilities.getVolumeViewportScrollInfo(vp, VOLUME_ID);
+      total = info.numScrollSteps;
+    }
+    if (total <= 1) return;
+    const idx = Math.round(frac * (total - 1));
     if (idx === panel.sliceLastIndex) return;
     requestPanelSliceJump(panel, idx);
   } catch { /* viewport not ready */ }
@@ -398,7 +716,10 @@ async function runXRCacheRebuild(): Promise<void> {
 
 class DicomSystem extends createSystem({}) {
   update(_delta: number, _time: number) {
+    ensureSlicePlanePointerEventsForRays();
     const sliceStates = fillSliceStates(gSliceStateScratch);
+    syncSlicePlanesFromSliceState(sliceStates);
+    updateDraggedSlicePlanes(sliceStates);
     const snap = PLANE_IDS.map((v) => {
       const s = sliceStates.get(v);
       return s ? `${s.current}/${s.total}` : '--';
@@ -1222,14 +1543,14 @@ function brightenGltfMaterials(root: THREE.Object3D): void {
  * Loads a lightweight GLB isosurface near the layout center (same asset as the GLB gallery).
  * Grabbable with one hand. Failure is non-fatal — volume slices still work without it.
  */
-async function loadWebPreviewGlb(world: World, manifestGlbBasename: string): Promise<void> {
+async function loadWebPreviewGlb(world: World, manifestGlbBasename: string): Promise<boolean> {
   const url = new URL(glbFileFromQuery(manifestGlbBasename), getDicomDataDirUrl()).href;
   const loader = new GLTFLoader();
   let gltf: Awaited<ReturnType<GLTFLoader['loadAsync']>>;
   try {
     gltf = await loader.loadAsync(url);
   } catch {
-    return;
+    return false;
   }
 
   const root = gltf.scene;
@@ -1243,8 +1564,13 @@ async function loadWebPreviewGlb(world: World, manifestGlbBasename: string): Pro
   const maxDim = Math.max(size.x, size.y, size.z, 1e-6);
   root.scale.setScalar(GLB_PREVIEW_MAX_AXIS_M / maxDim);
   root.rotation.set(0, 0, 0);
+  root.updateMatrixWorld(true);
+  const centeredBounds = new THREE.Box3().setFromObject(root, true);
+  const centeredCenter = centeredBounds.getCenter(new THREE.Vector3());
+  root.position.sub(centeredCenter);
 
-  // Invisible sphere is the grab/rotate handle; GLB follows as its child.
+  // Invisible sphere is the grab/rotate handle; pivot holds GLB + slice planes (siblings).
+  const modelPivot = new THREE.Group();
   const grabHandle = new THREE.Mesh(
     new THREE.SphereGeometry(GLB_GRAB_HIT_RADIUS_M, 18, 14),
     new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false }),
@@ -1256,18 +1582,27 @@ async function loadWebPreviewGlb(world: World, manifestGlbBasename: string): Pro
     THREE.MathUtils.degToRad(GLB_PREVIEW_WORLD_YXZ_DEG.z),
     'YXZ',
   );
-  grabHandle.add(root);
+  grabHandle.add(modelPivot);
+  modelPivot.add(root);
 
-  const entity = world.createTransformEntity(grabHandle);
-  entity.addComponent(Interactable, {});
+  const glbHandleEntity = world.createTransformEntity(grabHandle);
+  const pivotEntity = world.createTransformEntity(modelPivot, { parent: glbHandleEntity });
+  root.updateMatrixWorld(true);
+  const scaledBounds = new THREE.Box3().setFromObject(root, true);
+  gGlbModelPivotObj = modelPivot;
+  createSlicePlanes(world, modelPivot, root, scaledBounds, pivotEntity);
+
+  glbHandleEntity.addComponent(Interactable, {});
   // Two-hand handle: reliable rotation (line between hands + wrist roll). One-hand is mostly translation.
-  entity.addComponent(TwoHandsGrabbable, {
+  glbHandleEntity.addComponent(TwoHandsGrabbable, {
     translate: true,
     rotate: true,
     scale: false,
   });
   // Ensure controller rays can target this entity.
-  (entity.object3D as any).pointerEventsType = 'all';
+  (glbHandleEntity.object3D as any).pointerEventsType = 'all';
+  gGlbRootObj = root;
+  return true;
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -1384,10 +1719,17 @@ async function main(): Promise<void> {
       }
     } catch { /* ignore */ }
 
-    world.registerSystem(DicomSystem);
+    world.registerSystem(DicomSystem, { priority: 50 });
 
     createDashboard(world, imageIds[0], imageIds.length);
-    await loadWebPreviewGlb(world, xrPreviewGlb);
+    const glbOk = await loadWebPreviewGlb(world, xrPreviewGlb);
+    if (!glbOk) {
+      console.warn('[XR] Preview GLB failed to load', {
+        requested: glbFileFromQuery(xrPreviewGlb),
+        dataBase: getDicomDataDirUrl().href,
+      });
+      setProgress('Warning: GLB preview failed to load (slices still available).');
+    }
 
     for (const view of PLANE_IDS) {
       await openViewPanel(world, view);

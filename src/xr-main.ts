@@ -221,6 +221,8 @@ type ViewPanel = {
 type SlicePlane = {
   view: PlaneId;
   entity: ReturnType<World['createEntity']>;
+  /** Fixed local-plane rotation under modelPivot; rotates with GLB handle. */
+  localQuat: THREE.Quaternion;
   lastRequestedIndex: number;
 };
 
@@ -426,7 +428,7 @@ function applySlicePlanesFromState(
       slicePlaneWorldPositionFromBox(_glbRootWorldBox, ax, clampedW, _sliceWorldScratch);
       pivot.worldToLocal(_sliceWorldScratch);
       obj.position.copy(_sliceWorldScratch);
-      setSlicePlaneLocalRotationWorldLocked(obj, pivot, cfg.worldNormal);
+      obj.quaternion.copy(plane.localQuat);
 
       const panel = gPanels.get(plane.view);
       const ss = sliceStates.get(plane.view);
@@ -454,7 +456,7 @@ function applySlicePlanesFromState(
       slicePlaneWorldPositionFromBox(_glbRootWorldBox, ax, coordW, _sliceWorldScratch);
       obj.position.copy(_sliceWorldScratch);
       pivot.worldToLocal(obj.position);
-      setSlicePlaneLocalRotationWorldLocked(obj, pivot, cfg.worldNormal);
+      obj.quaternion.copy(plane.localQuat);
       plane.lastRequestedIndex = Math.max(0, ss.current - 1);
     }
   }
@@ -525,7 +527,12 @@ function createSlicePlanes(
     });
     (entity.object3D as any).pointerEventsType = 'all';
 
-    const plane: SlicePlane = { view, entity, lastRequestedIndex: -1 };
+    const plane: SlicePlane = {
+      view,
+      entity,
+      localQuat: mesh.quaternion.clone(),
+      lastRequestedIndex: -1,
+    };
     mesh.addEventListener('pointerdown', () => {
       applySlicePlaneOpacityHighlight(view);
     });

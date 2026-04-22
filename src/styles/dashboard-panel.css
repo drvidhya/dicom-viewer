@@ -114,7 +114,9 @@
 
 .dash-views {
   padding: 0 14px 14px;
-  display: flex; flex-direction: column; gap: 10px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
 }
 
 .view-card {
@@ -125,6 +127,15 @@
   border-radius: 14px;
   color: var(--text);
   transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
+}
+
+.view-card.compact {
+  min-height: 58px;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 8px 10px;
+  padding: 10px 12px;
 }
 
 .view-box-head {
@@ -145,6 +156,10 @@
   max-width: 88px;
   line-height: 1.25;
 }
+.view-card.compact .view-state {
+  grid-column: 2 / 3;
+  max-width: none;
+}
 
 .open-view-btn {
   margin-left: auto;
@@ -158,6 +173,11 @@
   color: var(--text);
   transition: border-color 0.15s, background 0.15s, color 0.15s;
 }
+.view-card.compact .open-view-btn {
+  grid-column: 3 / 4;
+  grid-row: 1 / span 2;
+  margin-left: 0;
+}
 .open-view-btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
@@ -169,39 +189,6 @@
 #card-axial    .open-view-btn:not(:disabled) { border-color: rgba(0,212,170,0.45); color: var(--axial); }
 #card-sagittal .open-view-btn:not(:disabled) { border-color: rgba(255,107,157,0.45); color: var(--sagittal); }
 #card-coronal  .open-view-btn:not(:disabled) { border-color: rgba(124,92,255,0.45); color: var(--coronal); }
-
-.view-box-sep {
-  height: 1px;
-  margin: 0 12px;
-  background: var(--border);
-}
-
-.view-box-body {
-  padding: 10px 14px 12px;
-}
-.slice-row {
-  display: flex; align-items: center; justify-content: space-between;
-  margin-bottom: 8px;
-  font-size: 12px;
-  color: var(--muted);
-}
-.slice-readout {
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-  color: var(--text);
-}
-.slice-slider {
-  width: 100%;
-  height: 22px;
-  margin: 0;
-  cursor: pointer;
-  accent-color: var(--muted);
-  opacity: 0.85;
-}
-.slice-slider:disabled {
-  cursor: not-allowed;
-  opacity: 0.35;
-}
 
 #card-axial:hover:not(.open)    { border-color: rgba(0,212,170,0.35); }
 #card-sagittal:hover:not(.open) { border-color: rgba(255,107,157,0.35); }
@@ -218,10 +205,6 @@
 #card-axial.open    .view-name { color: var(--axial); }
 #card-sagittal.open .view-name { color: var(--sagittal); }
 #card-coronal.open  .view-name { color: var(--coronal); }
-
-#card-axial.open    .slice-slider { accent-color: var(--axial); }
-#card-sagittal.open .slice-slider { accent-color: var(--sagittal); }
-#card-coronal.open  .slice-slider { accent-color: var(--coronal); }
 
 #card-axial.open    .view-state { color: var(--axial); }
 #card-sagittal.open .view-state { color: var(--sagittal); }

@@ -3,7 +3,6 @@ import {
   Enums,
   volumeLoader,
   setVolumesForViewports,
-  eventTarget,
   utilities,
   type Types,
 } from '@cornerstonejs/core';
@@ -37,7 +36,6 @@ import { ORIENTATION_MAP, PLANE_IDS, VIEW_LABELS, type PlaneId } from './viewer-
 import { updateStatus, updateProgress, hideOverlay, showOverlay, showError } from './ui';
 
 const VOLUME_ID = 'cornerstoneStreamingImageVolume:dicomVolume';
-const RENDERING_ENGINE_ID = 'dicomRE';
 const VIEWPORT_ID = 'vp-main';
 
 function parseViewQuery(): PlaneId | null {
@@ -49,81 +47,450 @@ function parseViewQuery(): PlaneId | null {
 const viewParam = parseViewQuery();
 const isViewer = viewParam !== null;
 
-// ── Dashboard + popup viewers (BroadcastChannel — no shared Cornerstone heap) ─
+// ── Dashboard render hub + popup display clients ─────────────────────────────
 
-const viewChannel = new BroadcastChannel('dicom-viewer-views');
-const openViews = new Set<string>();
+const openViews = new Set<PlaneId>();
+const childWindows = new Map<PlaneId, Window | null>();
+const STREAM_CHANNEL = 'dicom-stream-v1';
+const HUB_HOST_ID = 'dicom-stream-hub-host';
+const HUB_ENGINE_ID = 'dicomHubRE';
 
-type ViewMsg =
-  | { type: 'opened'; view: string }
-  | { type: 'closed'; view: string }
-  | { type: 'slice'; view: string; imageIndex: number }
-  | { type: 'sliceSync'; view: string; current: number; total: number };
+type ChildToMainMsg =
+  | {
+    channel: typeof STREAM_CHANNEL;
+    type: 'ready';
+    view: PlaneId;
+    width: number;
+    height: number;
+    dpr: number;
+  }
+  | {
+    channel: typeof STREAM_CHANNEL;
+    type: 'sliceSet';
+    view: PlaneId;
+    imageIndex: number;
+  }
+  | {
+    channel: typeof STREAM_CHANNEL;
+    type: 'sliceDelta';
+    view: PlaneId;
+    delta: number;
+  }
+  | {
+    channel: typeof STREAM_CHANNEL;
+    type: 'resize';
+    view: PlaneId;
+    width: number;
+    height: number;
+    dpr: number;
+  }
+  | {
+    channel: typeof STREAM_CHANNEL;
+    type: 'closed';
+    view: PlaneId;
+  };
+
+type MainToChildMsg =
+  | {
+    channel: typeof STREAM_CHANNEL;
+    type: 'frame';
+    view: PlaneId;
+    frameId: number;
+    current: number;
+    total: number;
+    bitmap: ImageBitmap;
+  }
+  | {
+    channel: typeof STREAM_CHANNEL;
+    type: 'close';
+    view: PlaneId;
+  };
+
+type HubViewState = {
+  view: PlaneId;
+  viewportId: string;
+  element: HTMLDivElement;
+  width: number;
+  height: number;
+  dpr: number;
+  current: number;
+  total: number;
+  frameId: number;
+  dirty: boolean;
+  pending: boolean;
+  renderQueued: boolean;
+  frameInFlight: boolean;
+  sliceInFlight: boolean;
+  queuedSlice: number | null;
+  lastSignature: string;
+};
+
+let hubEngine: RenderingEngine | null = null;
+const hubViews = new Map<PlaneId, HubViewState>();
+let messageListenerInstalled = false;
+/** Same-origin broadcast: works when popups have no `window.opener` (COOP, automation, etc.). */
+let streamHub: BroadcastChannel | null = null;
+
+function getStreamHub(): BroadcastChannel {
+  if (!streamHub) streamHub = new BroadcastChannel(STREAM_CHANNEL);
+  return streamHub;
+}
+
+function isPlaneId(value: unknown): value is PlaneId {
+  return typeof value === 'string' && (PLANE_IDS as readonly string[]).includes(value);
+}
+
+function clampRenderDimension(value: number, fallback: number): number {
+  if (!Number.isFinite(value)) return fallback;
+  return Math.max(256, Math.min(1400, Math.round(value)));
+}
+
+function dashboardUrl(): string {
+  const u = new URL(window.location.href);
+  u.searchParams.delete('view');
+  return u.href;
+}
+
+function showMissingDashboardState(): void {
+  const bar = document.getElementById('load-bar');
+  bar?.classList.remove('loading');
+  bar?.classList.remove('done');
+
+  const viewerContent = document.getElementById('viewer-content');
+  if (!viewerContent) return;
+  viewerContent.innerHTML = `
+    <div class="vp-container" style="display:flex;align-items:center;justify-content:center;min-height:70vh;">
+      <div style="max-width:520px;text-align:center;padding:24px;">
+        <h2 style="margin:0 0 10px;">No main dashboard found</h2>
+        <p style="margin:0 0 18px;opacity:.85;">
+          This view needs the dashboard window to be open. Reload this window into the dashboard, then open views again.
+        </p>
+        <button id="btn-open-dashboard" type="button" style="padding:10px 16px;cursor:pointer;">
+          Go to Dashboard
+        </button>
+      </div>
+    </div>
+  `;
+  document.getElementById('btn-open-dashboard')?.addEventListener('click', () => {
+    window.location.href = dashboardUrl();
+  });
+  hideOverlay();
+  updateStatus('Dashboard required', 'error');
+}
 
 function updateViewCard(view: string) {
   const card = document.getElementById(`card-${view}`);
-  const open = openViews.has(view);
+  const open = openViews.has(view as PlaneId);
   card?.classList.toggle('open', open);
   const stateEl = card?.querySelector('.view-state');
   if (stateEl) stateEl.textContent = open ? 'Window open' : 'Closed';
-  const slider = document.getElementById(`slider-${view}`) as HTMLInputElement | null;
-  const readout = document.getElementById(`slice-readout-${view}`);
-  if (slider) slider.disabled = !open;
-  if (!open && readout) readout.textContent = '— / —';
+  const btn = document.getElementById(`btn-${view}`) as HTMLButtonElement | null;
+  if (btn) btn.textContent = open ? 'Close' : 'Open';
 }
 
-function setupViewCards(nFrames: number) {
-  const maxGuess = String(Math.max(1, nFrames));
+function getLiveChildWindow(view: PlaneId): Window | null {
+  const win = childWindows.get(view) ?? null;
+  if (!win || win.closed) {
+    childWindows.delete(view);
+    if (openViews.delete(view)) updateViewCard(view);
+    return null;
+  }
+  return win;
+}
+
+function sendToChild(view: PlaneId, payload: MainToChildMsg, transfer?: Transferable[]): void {
+  const win = getLiveChildWindow(view);
+  if (!win) return;
+  try {
+    win.postMessage(payload, window.location.origin, transfer ?? []);
+  } catch {
+    childWindows.delete(view);
+    if (openViews.delete(view)) updateViewCard(view);
+  }
+}
+
+function getScrollInfo(view: PlaneId): { current: number; total: number } {
+  const state = hubViews.get(view);
+  if (!state || !hubEngine) return { current: state?.current ?? 1, total: state?.total ?? 1 };
+  try {
+    const vp = hubEngine.getViewport(state.viewportId) as Types.IVolumeViewport;
+    const info = utilities.getVolumeViewportScrollInfo(vp, VOLUME_ID);
+    const total = Math.max(1, info.numScrollSteps);
+    const current = Math.min(Math.max(1, info.currentStepIndex + 1), total);
+    return { current, total };
+  } catch {
+    return { current: state.current, total: state.total };
+  }
+}
+
+function resizeHubView(view: PlaneId, width: number, height: number, dpr: number): void {
+  const state = hubViews.get(view);
+  if (!state || !hubEngine) return;
+  const nextDpr = Number.isFinite(dpr) ? Math.max(1, Math.min(2, dpr)) : 1;
+  const nextW = clampRenderDimension(width * nextDpr, state.width);
+  const nextH = clampRenderDimension(height * nextDpr, state.height);
+  if (nextW === state.width && nextH === state.height && nextDpr === state.dpr) return;
+  state.width = nextW;
+  state.height = nextH;
+  state.dpr = nextDpr;
+  state.element.style.width = `${state.width}px`;
+  state.element.style.height = `${state.height}px`;
+  hubEngine.resize();
+  state.dirty = true;
+}
+
+async function renderAndSendViewFrame(view: PlaneId): Promise<void> {
+  const state = hubViews.get(view);
+  if (!state || !hubEngine) return;
+  if (!state.dirty || state.frameInFlight) return;
+  if (!openViews.has(view)) return;
+  state.frameInFlight = true;
+  state.dirty = false;
+  try {
+    hubEngine.renderViewports([state.viewportId]);
+    const { current, total } = getScrollInfo(view);
+    state.current = current;
+    state.total = total;
+    const signature = `${current}/${total}/${state.width}x${state.height}`;
+    if (signature === state.lastSignature && !state.pending) return;
+    const canvas = state.element.querySelector('canvas');
+    if (!(canvas instanceof HTMLCanvasElement)) return;
+    const bitmap = await createImageBitmap(canvas);
+    state.frameId += 1;
+    state.lastSignature = signature;
+    const payload: MainToChildMsg = {
+      channel: STREAM_CHANNEL,
+      type: 'frame',
+      view,
+      frameId: state.frameId,
+      current,
+      total,
+      bitmap,
+    };
+    const win = getLiveChildWindow(view);
+    if (win) {
+      try {
+        win.postMessage(payload, window.location.origin, [bitmap]);
+        return;
+      } catch {
+        childWindows.delete(view);
+      }
+    }
+    try {
+      getStreamHub().postMessage(payload);
+    } catch {
+      bitmap.close();
+    }
+  } finally {
+    state.frameInFlight = false;
+    if (state.pending || state.dirty) {
+      state.pending = false;
+      queueViewRender(view);
+    }
+  }
+}
+
+function queueViewRender(view: PlaneId): void {
+  const state = hubViews.get(view);
+  if (!state) return;
+  state.dirty = true;
+  if (state.frameInFlight) {
+    state.pending = true;
+    return;
+  }
+  if (state.renderQueued) return;
+  state.renderQueued = true;
+  window.requestAnimationFrame(() => {
+    state.renderQueued = false;
+    void renderAndSendViewFrame(view);
+  });
+}
+
+function requestSliceSet(view: PlaneId, requestedIndex: number): void {
+  const state = hubViews.get(view);
+  if (!state || !hubEngine) return;
+  const clamped = Math.max(0, Math.min(Math.max(0, state.total - 1), Math.round(requestedIndex)));
+  if (state.sliceInFlight) {
+    state.queuedSlice = clamped;
+    return;
+  }
+  state.sliceInFlight = true;
+  void utilities.jumpToSlice(state.element, { imageIndex: clamped, volumeId: VOLUME_ID })
+    .catch(() => { /* ignore failed jump */ })
+    .finally(() => {
+      state.sliceInFlight = false;
+      const next = state.queuedSlice;
+      state.queuedSlice = null;
+      queueViewRender(view);
+      if (next != null && next !== clamped) requestSliceSet(view, next);
+    });
+}
+
+function closeViewWindow(view: PlaneId): void {
+  sendToChild(view, { channel: STREAM_CHANNEL, type: 'close', view });
+  try {
+    getStreamHub().postMessage({ channel: STREAM_CHANNEL, type: 'close', view } satisfies MainToChildMsg);
+  } catch { /* ignore */ }
+  const win = getLiveChildWindow(view);
+  if (win) {
+    try { win.close(); } catch { /* ignore */ }
+  }
+  childWindows.delete(view);
+  openViews.delete(view);
+  updateViewCard(view);
+}
+
+function handleChildPayload(d: ChildToMainMsg, sourceWin: Window | null): void {
+  if (!d || d.channel !== STREAM_CHANNEL || !isPlaneId(d.view)) return;
+  const view = d.view;
+  if (sourceWin) childWindows.set(view, sourceWin);
+
+  if (d.type === 'closed') {
+    if (sourceWin == null || childWindows.get(view) === sourceWin) {
+      childWindows.delete(view);
+      openViews.delete(view);
+      updateViewCard(view);
+    }
+    return;
+  }
+
+  openViews.add(view);
+  updateViewCard(view);
+
+  if (d.type === 'ready' || d.type === 'resize') {
+    resizeHubView(view, d.width, d.height, d.dpr);
+    queueViewRender(view);
+    return;
+  }
+  if (d.type === 'sliceSet') {
+    requestSliceSet(view, d.imageIndex);
+    return;
+  }
+  if (d.type === 'sliceDelta') {
+    requestSliceSet(view, (hubViews.get(view)?.current ?? 1) - 1 + d.delta);
+  }
+}
+
+function handleChildWindowMessage(e: MessageEvent): void {
+  if (e.origin !== window.location.origin) return;
+  const sourceWin = e.source instanceof Window ? e.source : null;
+  handleChildPayload(e.data as ChildToMainMsg, sourceWin);
+}
+
+function handleStreamHubMessage(ev: MessageEvent): void {
+  const d = ev.data as { type?: string } | null;
+  if (!d || typeof d !== 'object') return;
+  if (d.type === 'frame' || d.type === 'close') return;
+  handleChildPayload(d as ChildToMainMsg, null);
+}
+
+function attachHubSidebandListeners(): void {
+  if (messageListenerInstalled) return;
+  window.addEventListener('message', handleChildWindowMessage);
+  getStreamHub().addEventListener('message', handleStreamHubMessage);
+  messageListenerInstalled = true;
+}
+
+async function initDashboardRenderHub(
+  imageIds: string[],
+  voiRange: { lower: number; upper: number },
+): Promise<void> {
+  if (hubEngine) return;
+  const host = document.createElement('div');
+  host.id = HUB_HOST_ID;
+  host.style.position = 'fixed';
+  host.style.left = '-10000px';
+  host.style.top = '0';
+  host.style.opacity = '0';
+  host.style.pointerEvents = 'none';
+  document.body.appendChild(host);
+
+  hubEngine = new RenderingEngine(HUB_ENGINE_ID);
+  const viewportInputs: Types.PublicViewportInput[] = [];
 
   for (const view of PLANE_IDS) {
+    const element = document.createElement('div');
+    element.style.width = '768px';
+    element.style.height = '768px';
+    host.appendChild(element);
+    const viewportId = `hub-vp-${view}`;
+    viewportInputs.push({
+      viewportId,
+      type: Enums.ViewportType.ORTHOGRAPHIC,
+      element,
+      defaultOptions: {
+        orientation: ORIENTATION_MAP[view],
+        background: [0, 0, 0] as Types.Point3,
+      },
+    });
+    hubViews.set(view, {
+      view,
+      viewportId,
+      element,
+      width: 768,
+      height: 768,
+      dpr: 1,
+      current: 1,
+      total: 1,
+      frameId: 0,
+      dirty: true,
+      pending: false,
+      renderQueued: false,
+      frameInFlight: false,
+      sliceInFlight: false,
+      queuedSlice: null,
+      lastSignature: '',
+    });
+  }
+
+  hubEngine.setViewports(viewportInputs);
+  const volume = await volumeLoader.createAndCacheVolume(VOLUME_ID, { imageIds });
+  volume.load();
+
+  await setVolumesForViewports(
+    hubEngine,
+    [{ volumeId: VOLUME_ID, callback: ctVoiCallback(voiRange.lower, voiRange.upper) }],
+    PLANE_IDS.map((view) => hubViews.get(view)?.viewportId!).filter(Boolean),
+  );
+
+  for (const view of PLANE_IDS) {
+    const state = hubViews.get(view);
+    if (!state) continue;
+    const vp = hubEngine.getViewport(state.viewportId) as Types.IVolumeViewport;
+    vp.setProperties({
+      voiRange,
+      VOILUTFunction: Enums.VOILUTFunctionType.LINEAR,
+      colormap: { name: 'Grayscale' },
+    });
+    const info = getScrollInfo(view);
+    state.current = info.current;
+    state.total = info.total;
+  }
+  hubEngine.renderViewports(PLANE_IDS.map((view) => hubViews.get(view)?.viewportId!).filter(Boolean));
+
+  attachHubSidebandListeners();
+}
+
+function setupViewCards() {
+  for (const view of PLANE_IDS) {
     const openBtn = document.getElementById(`btn-${view}`) as HTMLButtonElement;
-    const slider = document.getElementById(`slider-${view}`) as HTMLInputElement;
     openBtn.disabled = false;
-    slider.max = maxGuess;
-    slider.min = '1';
-    slider.value = '1';
 
     openBtn.addEventListener('click', () => {
-      // Resolve against the current document URL (not pathname alone) so nested
-      // paths and non-root deployments open this app, not the site root.
+      if (openViews.has(view)) {
+        closeViewWindow(view);
+        return;
+      }
       const u = new URL(window.location.href);
       u.searchParams.set('view', view);
-      window.open(
+      const win = window.open(
         u.href,
         `dicom-${view}`,
         'width=1000,height=800,menubar=no,toolbar=no',
       );
-    });
-
-    slider.addEventListener('input', () => {
-      if (!openViews.has(view)) return;
-      const imageIndex = Number(slider.value) - 1;
-      const readout = document.getElementById(`slice-readout-${view}`);
-      if (readout) readout.textContent = `${slider.value} / ${slider.max}`;
-      viewChannel.postMessage({ type: 'slice', view, imageIndex } satisfies ViewMsg);
+      childWindows.set(view, win);
     });
   }
-
-  viewChannel.addEventListener('message', (e: MessageEvent) => {
-    const d = e.data as ViewMsg;
-    if (!d || typeof d !== 'object' || !('type' in d)) return;
-    if (d.type === 'opened') {
-      openViews.add(d.view);
-      updateViewCard(d.view);
-    } else if (d.type === 'closed') {
-      openViews.delete(d.view);
-      updateViewCard(d.view);
-    } else if (d.type === 'sliceSync' && d.view) {
-      const slider = document.getElementById(`slider-${d.view}`) as HTMLInputElement | null;
-      const readout = document.getElementById(`slice-readout-${d.view}`);
-      if (!slider || !readout) return;
-      const total = Math.max(1, d.total);
-      const current = Math.min(Math.max(1, d.current), total);
-      slider.max = String(total);
-      slider.value = String(current);
-      readout.textContent = `${current} / ${total}`;
-    }
-  });
 }
 
 function setupCacheControls(imageIds: string[]) {
@@ -239,10 +606,12 @@ async function runDashboard() {
     voiRange = getVoiFromMetadata(imageIds[Math.floor(imageIds.length / 2)]);
   }
   saveSession({ imageIds, voiRange });
+  updateProgress('Preparing shared render hub…');
+  await initDashboardRenderHub(imageIds, voiRange);
 
   applyDashboardChrome();
   populateInfo(imageIds[0], imageIds.length);
-  setupViewCards(imageIds.length);
+  setupViewCards();
   setupCacheControls(imageIds);
   hideOverlay();
   updateStatus('Ready', 'ready');
@@ -263,222 +632,141 @@ async function runViewer(view: PlaneId) {
   const vpHeader = document.getElementById('vp-header')!;
   vpHeader.textContent = VIEW_LABELS[view];
   vpHeader.className = `vp-header ${view}`;
-
-  document.getElementById('load-bar')?.classList.add('loading');
-
-  updateStatus('Initialising…', 'loading');
-  updateProgress('Registering offline file cache…');
-  await registerDicomServiceWorker();
-  updateProgress('Initialising Cornerstone3D…');
-  await initCornerstone();
-
-  let imageIds: string[];
-  let voiRange: { lower: number; upper: number };
-
-  const session = loadSession();
-  let usedSession = false;
-  if (session) {
-    usedSession = true;
-    imageIds = session.imageIds;
-    voiRange = session.voiRange;
-    await prefetchAll(imageIds, (loaded, total) =>
-      updateProgress(`Loading slices ${loaded} / ${total}…`));
-  } else {
-    ({ imageIds, voiRange } = await loadFromManifest(updateProgress));
-  }
-
-  const nBefore = imageIds.length;
-  imageIds = imageIdsReadyForVolume(imageIds);
-  if (imageIds.length === 0 && usedSession) {
-    clearSession();
-    ({ imageIds, voiRange } = await loadFromManifest(updateProgress));
-    imageIds = imageIdsReadyForVolume(imageIds);
-  }
-  if (imageIds.length === 0) {
-    throw new Error(
-      'No usable DICOM slices (missing metadata, bad session, or unsupported transfer syntax). Clear site data for this origin or use a private window.',
-    );
-  }
-  if (imageIds.length !== nBefore) {
-    voiRange = getVoiFromMetadata(imageIds[Math.floor(imageIds.length / 2)]);
-  }
-  saveSession({ imageIds, voiRange });
-
-  updateProgress('Setting up viewport…');
-  const renderingEngine = new RenderingEngine(RENDERING_ENGINE_ID);
-
-  renderingEngine.setViewports([{
-    viewportId: VIEWPORT_ID,
-    type: Enums.ViewportType.ORTHOGRAPHIC,
-    element: document.getElementById(VIEWPORT_ID) as HTMLDivElement,
-    defaultOptions: {
-      orientation: ORIENTATION_MAP[view],
-      background: [0, 0, 0] as Types.Point3,
-    },
-  }]);
-
-  updateProgress('Creating volume…');
-  const volume = await volumeLoader.createAndCacheVolume(VOLUME_ID, { imageIds });
-  volume.load();
+  const viewerSlider = document.getElementById('viewer-slice-slider') as HTMLInputElement;
+  const viewerReadout = document.getElementById('viewer-slice-readout') as HTMLElement;
+  viewerSlider.classList.add(view);
 
   const bar = document.getElementById('load-bar');
-  if (bar) {
-    let loaded = 0;
-    let done = false;
-    const complete = () => {
-      if (done) return;
-      done = true;
-      eventTarget.removeEventListener(Enums.Events.IMAGE_LOADED, handler);
-      bar.classList.remove('loading');
-      bar.classList.add('done');
-    };
-    const handler = () => { if (++loaded >= imageIds.length) complete(); };
-    eventTarget.addEventListener(Enums.Events.IMAGE_LOADED, handler);
-    setTimeout(complete, 60_000);
+  bar?.classList.add('loading');
+  updateStatus('Connecting to dashboard renderer…', 'loading');
+  updateProgress('Waiting for first frame…');
+
+  const streamBc = getStreamHub();
+
+  const vpEl = document.getElementById(VIEWPORT_ID)!;
+  const frameCanvas = document.createElement('canvas');
+  frameCanvas.style.width = '100%';
+  frameCanvas.style.height = '100%';
+  frameCanvas.style.display = 'block';
+  frameCanvas.style.background = '#000';
+  vpEl.appendChild(frameCanvas);
+  const frameCtx = frameCanvas.getContext('2d');
+  if (!frameCtx) {
+    throw new Error('Failed to initialise frame canvas context');
   }
+  const ctx2d = frameCtx;
 
-  updateProgress('Assigning volume to viewport…');
-  await setVolumesForViewports(
-    renderingEngine,
-    [{ volumeId: VOLUME_ID, callback: ctVoiCallback(voiRange.lower, voiRange.upper) }],
-    [VIEWPORT_ID],
-  );
+  let lastFrameId = 0;
+  let gotFirstFrame = false;
+  const hubWaitTimer = window.setTimeout(() => {
+    if (!gotFirstFrame) showMissingDashboardState();
+  }, 12_000);
 
-  const vp = renderingEngine.getViewport(VIEWPORT_ID) as Types.IVolumeViewport;
-  vp.setProperties({
-    voiRange,
-    VOILUTFunction: Enums.VOILUTFunctionType.LINEAR,
-    colormap: { name: 'Grayscale' },
-  });
-  renderingEngine.renderViewports([VIEWPORT_ID]);
-
-  const vpEl = document.getElementById(VIEWPORT_ID) as HTMLDivElement;
-
-  /** Positive delta moves forward through slices (same direction as wheel down). */
-  function stepSlices(deltaSteps: number) {
-    if (deltaSteps === 0) return;
-    const vport = renderingEngine.getViewport(VIEWPORT_ID) as Types.IVolumeViewport;
-    const cam = vport.getCamera();
-    const fp = cam.focalPoint!;
-    const n = cam.viewPlaneNormal!;
-    vport.setCamera({
-      focalPoint: [
-        fp[0] + n[0] * deltaSteps,
-        fp[1] + n[1] * deltaSteps,
-        fp[2] + n[2] * deltaSteps,
-      ],
-    });
-    vport.render();
-    postSliceSync();
-  }
-
-  function postSliceSync() {
+  function postToHub(msg: ChildToMainMsg): void {
     try {
-      const vport = renderingEngine.getViewport(VIEWPORT_ID) as Types.IVolumeViewport;
-      const info = utilities.getVolumeViewportScrollInfo(vport, VOLUME_ID);
-      viewChannel.postMessage({
-        type: 'sliceSync',
-        view,
-        current: info.currentStepIndex + 1,
-        total: info.numScrollSteps,
-      } satisfies ViewMsg);
-    } catch {
-      /* viewport not ready */
+      streamBc.postMessage(msg);
+    } catch { /* ignore */ }
+    const openerWin = window.opener;
+    if (openerWin instanceof Window && !openerWin.closed) {
+      try {
+        openerWin.postMessage(msg, window.location.origin);
+      } catch { /* ignore */ }
     }
   }
 
-  const onSliceMsg = async (e: MessageEvent) => {
-    const d = e.data as ViewMsg;
-    if (d?.type !== 'slice' || d.view !== view) return;
-    if (typeof d.imageIndex !== 'number') return;
-    try {
-      await utilities.jumpToSlice(vpEl, { imageIndex: d.imageIndex, volumeId: VOLUME_ID });
-      renderingEngine.renderViewports([VIEWPORT_ID]);
-      postSliceSync();
-    } catch { /* ignore */ }
-  };
-  viewChannel.addEventListener('message', onSliceMsg);
-
-  document.getElementById(VIEWPORT_ID)!.addEventListener('wheel', (e) => {
-    e.preventDefault();
-    stepSlices(e.deltaY > 0 ? 1 : -1);
-  }, { passive: false });
-
-  /**
-   * Drag: pointer position maps linearly across the window — (0,0) to bottom-right
-   * spans all slices. Uses (clientX + clientY) / (innerWidth + innerHeight) so a
-   * drag from the top-left corner to the opposite corner covers the full range.
-   */
-  let dragPointerId: number | null = null;
-  let lastDragMappedIndex = -1;
-
-  function windowDragSpanPx(): number {
-    return Math.max(1, window.innerWidth + window.innerHeight);
+  function sendResize() {
+    const rect = vpEl.getBoundingClientRect();
+    postToHub({
+      channel: STREAM_CHANNEL,
+      type: 'resize',
+      view,
+      width: Math.max(256, Math.round(rect.width)),
+      height: Math.max(256, Math.round(rect.height)),
+      dpr: window.devicePixelRatio || 1,
+    });
   }
 
-  function sliceIndexFromWindowClient(clientX: number, clientY: number, numSteps: number): number | null {
-    if (numSteps <= 1) return null;
-    const span = windowDragSpanPx();
-    const t = Math.max(0, Math.min(1, (clientX + clientY) / span));
-    const maxIdx = numSteps - 1;
-    return Math.max(0, Math.min(maxIdx, Math.round(t * maxIdx)));
-  }
-
-  function applyDragSliceIfChanged(clientX: number, clientY: number) {
-    let numSteps: number;
-    try {
-      const vport = renderingEngine.getViewport(VIEWPORT_ID) as Types.IVolumeViewport;
-      numSteps = utilities.getVolumeViewportScrollInfo(vport, VOLUME_ID).numScrollSteps;
-    } catch {
+  function applyFrameMessage(d: MainToChildMsg): void {
+    if (d.type === 'close') {
+      window.close();
       return;
     }
-    const clamped = sliceIndexFromWindowClient(clientX, clientY, numSteps);
-    if (clamped === null || clamped === lastDragMappedIndex) return;
-    lastDragMappedIndex = clamped;
-    void utilities.jumpToSlice(vpEl, { imageIndex: clamped, volumeId: VOLUME_ID })
-      .then(() => {
-        renderingEngine.renderViewports([VIEWPORT_ID]);
-        postSliceSync();
-      })
-      .catch(() => { /* ignore */ });
-  }
-
-  vpEl.addEventListener('pointerdown', (e) => {
-    if (e.button !== 0) return;
-    dragPointerId = e.pointerId;
-    lastDragMappedIndex = -1;
-    vpEl.setPointerCapture(e.pointerId);
-    applyDragSliceIfChanged(e.clientX, e.clientY);
-  });
-
-  vpEl.addEventListener('pointermove', (e) => {
-    if (dragPointerId !== e.pointerId) return;
-    applyDragSliceIfChanged(e.clientX, e.clientY);
-  });
-
-  function endSliceDrag(e: PointerEvent) {
-    if (dragPointerId !== e.pointerId) return;
-    dragPointerId = null;
-    lastDragMappedIndex = -1;
-    try {
-      vpEl.releasePointerCapture(e.pointerId);
-    } catch {
-      /* not captured */
+    if (d.type !== 'frame' || d.frameId <= lastFrameId) return;
+    lastFrameId = d.frameId;
+    const bitmap = d.bitmap;
+    if (frameCanvas.width !== bitmap.width || frameCanvas.height !== bitmap.height) {
+      frameCanvas.width = bitmap.width;
+      frameCanvas.height = bitmap.height;
+    }
+    ctx2d.clearRect(0, 0, frameCanvas.width, frameCanvas.height);
+    ctx2d.drawImage(bitmap, 0, 0, frameCanvas.width, frameCanvas.height);
+    bitmap.close();
+    viewerSlider.max = String(Math.max(1, d.total));
+    viewerSlider.value = String(Math.min(Math.max(1, d.current), Math.max(1, d.total)));
+    viewerReadout.textContent = `${viewerSlider.value} / ${viewerSlider.max}`;
+    if (!gotFirstFrame) {
+      gotFirstFrame = true;
+      window.clearTimeout(hubWaitTimer);
+      bar?.classList.remove('loading');
+      bar?.classList.add('done');
+      hideOverlay();
+      updateStatus('Ready', 'ready');
     }
   }
-  vpEl.addEventListener('pointerup', endSliceDrag);
-  vpEl.addEventListener('pointercancel', endSliceDrag);
 
-  viewChannel.postMessage({ type: 'opened', view } satisfies ViewMsg);
-  postSliceSync();
+  const onWindowMsg = (e: MessageEvent) => {
+    if (e.origin !== window.location.origin) return;
+    const d = e.data as MainToChildMsg | null;
+    if (!d || d.channel !== STREAM_CHANNEL || d.view !== view) return;
+    applyFrameMessage(d);
+  };
 
-  window.addEventListener('beforeunload', () => {
-    viewChannel.removeEventListener('message', onSliceMsg);
-    viewChannel.postMessage({ type: 'closed', view } satisfies ViewMsg);
+  const onBcMsg = (ev: MessageEvent) => {
+    const d = ev.data as MainToChildMsg | null;
+    if (!d || d.channel !== STREAM_CHANNEL || d.view !== view) return;
+    applyFrameMessage(d);
+  };
+
+  viewerSlider.addEventListener('input', () => {
+    postToHub({
+      channel: STREAM_CHANNEL,
+      type: 'sliceSet',
+      view,
+      imageIndex: Math.max(0, Number(viewerSlider.value) - 1),
+    });
   });
 
-  hideOverlay();
-  updateStatus('Ready', 'ready');
+  vpEl.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    postToHub({
+      channel: STREAM_CHANNEL,
+      type: 'sliceDelta',
+      view,
+      delta: e.deltaY > 0 ? 1 : -1,
+    });
+  }, { passive: false });
+
+  const resizeObserver = new ResizeObserver(() => sendResize());
+  resizeObserver.observe(vpEl);
+  window.addEventListener('message', onWindowMsg);
+  streamBc.addEventListener('message', onBcMsg);
+
+  postToHub({
+    channel: STREAM_CHANNEL,
+    type: 'ready',
+    view,
+    width: Math.max(256, Math.round(vpEl.getBoundingClientRect().width)),
+    height: Math.max(256, Math.round(vpEl.getBoundingClientRect().height)),
+    dpr: window.devicePixelRatio || 1,
+  });
+
+  window.addEventListener('beforeunload', () => {
+    window.clearTimeout(hubWaitTimer);
+    resizeObserver.disconnect();
+    window.removeEventListener('message', onWindowMsg);
+    streamBc.removeEventListener('message', onBcMsg);
+    postToHub({ channel: STREAM_CHANNEL, type: 'closed', view });
+  });
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────

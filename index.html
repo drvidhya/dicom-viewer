@@ -8,11 +8,11 @@
       /* Hide dashboard until JS fills markup (avoids empty layout flash). */
       #main-content:not(.dashboard-ready) { visibility: hidden; }
     </style>
-    <script type="module" crossorigin src="./assets/main-BAtJhaB3.js"></script>
+    <script type="module" crossorigin src="./assets/main-34afBSUr.js"></script>
     <link rel="modulepreload" crossorigin href="./assets/modulepreload-polyfill-B5Qt9EMX.js">
-    <link rel="modulepreload" crossorigin href="./assets/viewer-planes-N6I7SR0N.js">
+    <link rel="modulepreload" crossorigin href="./assets/viewer-planes-pxwK-hNW.js">
     <link rel="stylesheet" crossorigin href="./assets/viewer-planes-DxTM6UWW.css">
-    <link rel="stylesheet" crossorigin href="./assets/main-CZrxO9Oa.css">
+    <link rel="stylesheet" crossorigin href="./assets/main-BXwICMk4.css">
   </head>
   <body>
     <div id="load-bar"></div>
@@ -52,7 +52,22 @@
       <div class="main-content" id="viewer-content" style="display:none">
         <div class="vp-container">
           <div class="vp-header axial" id="vp-header">Axial</div>
-          <div id="vp-main"></div>
+          <div class="viewer-body">
+            <div id="vp-main"></div>
+            <aside class="viewer-slice-panel">
+              <div class="viewer-slice-title">Slice</div>
+              <div class="viewer-slice-readout" id="viewer-slice-readout">— / —</div>
+              <input
+                type="range"
+                class="viewer-slice-slider"
+                id="viewer-slice-slider"
+                min="1"
+                max="1"
+                value="1"
+                aria-label="Slice"
+              />
+            </aside>
+          </div>
         </div>
       </div>
     </div>

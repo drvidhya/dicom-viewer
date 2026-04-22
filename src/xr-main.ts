@@ -164,6 +164,7 @@ let gGlbRootObj: THREE.Object3D | null = null;
 /** GLB root + slice planes parent (for world ↔ local). */
 let gGlbModelPivotObj: THREE.Object3D | null = null;
 const _sliceWorldScratch = new THREE.Vector3();
+const _glbRootWorldBox = new THREE.Box3();
 
 // Dashboard redraw state
 let gDashCtx:     CanvasRenderingContext2D | null = null;
@@ -220,12 +221,6 @@ type ViewPanel = {
 type SlicePlane = {
   view: PlaneId;
   entity: ReturnType<World['createEntity']>;
-  /**
-   * When true: Cornerstone slice 1 (first) sits at bounds.max on this axis, last slice at bounds.min.
-   */
-  highEndIsFirstSlice: boolean;
-  /** Local rotation under the pivot (world-locked slice plane vs room axes). */
-  baseQuat: THREE.Quaternion;
   lastRequestedIndex: number;
 };
 
@@ -350,33 +345,14 @@ function setSlicePlaneLocalRotationWorldLocked(
   mesh.quaternion.copy(_qwInvPivot).multiply(_qwPlane);
 }
 
-/**
- * MPR plane normals in **world** space (Three.js Y-up). Plane mesh +Z is mapped to this normal.
- */
-const XR_SLICE_PLANE_WORLD_NORMAL: Record<PlaneId, THREE.Vector3> = {
-  axial: new THREE.Vector3(0, 1, 0),
-  sagittal: new THREE.Vector3(1, 0, 0),
-  coronal: new THREE.Vector3(0, 0, 1),
-};
-
-/**
- * World axis (0=x, 1=y, 2=z) each view **slides along**. Axial = top↔bottom (Y); sagittal/coronal
- * slide along X / Z with vertical planes — simple and matches radiologic layout in Y-up scenes.
- */
-const XR_SLICE_SCROLL_AXIS: Record<PlaneId, 0 | 1 | 2> = {
-  axial: 1,
-  sagittal: 0,
-  coronal: 2,
-};
-
-/**
- * Per-orientation: whether slice index 1 is at the high end of the model AABB on that axis.
- * Sagittal/coronal left false unless volume scroll direction disagrees with mesh bounds.
- */
-const SLICE_HIGH_END_IS_FIRST: Record<PlaneId, boolean> = {
-  axial: true,
-  sagittal: false,
-  coronal: false,
+/** Per MPR view: world-space plane normal, world axis the plane slides on, Cornerstone index direction. */
+const XR_SLICE_BY_VIEW: Record<
+  PlaneId,
+  { worldNormal: THREE.Vector3; scrollAxis: 0 | 1 | 2; highEndIsFirstSlice: boolean }
+> = {
+  axial: { worldNormal: new THREE.Vector3(0, 1, 0), scrollAxis: 1, highEndIsFirstSlice: true },
+  sagittal: { worldNormal: new THREE.Vector3(1, 0, 0), scrollAxis: 0, highEndIsFirstSlice: false },
+  coronal: { worldNormal: new THREE.Vector3(0, 0, 1), scrollAxis: 2, highEndIsFirstSlice: false },
 };
 
 function fracFromSlice(current: number, total: number): number {
@@ -425,81 +401,62 @@ function slicePlaneWorldPositionFromBox(
   return out;
 }
 
-function syncSlicePlanesFromSliceState(
+/** One pass: world AABB once; slider sync or single-axis drag + `jumpToSlice` when grabbed. */
+function applySlicePlanesFromState(
   sliceStates: Map<string, { current: number; total: number }>,
 ): void {
   const root = gGlbRootObj;
   const pivot = gGlbModelPivotObj;
-  if (!root || !pivot) return;
+  if (!root || !pivot || gSlicePlanes.size === 0) return;
   root.updateMatrixWorld(true);
   pivot.updateMatrixWorld(true);
-  const box = new THREE.Box3().setFromObject(root, true);
+  _glbRootWorldBox.setFromObject(root, true);
+
   for (const plane of gSlicePlanes.values()) {
     const obj = plane.entity.object3D!;
-    if (plane.entity.hasComponent(Pressed)) continue;
-    const ss = sliceStates.get(plane.view);
-    if (!ss || ss.total < 1) continue;
+    const cfg = XR_SLICE_BY_VIEW[plane.view];
+    const ax = cfg.scrollAxis;
+    const minW = _glbRootWorldBox.min.getComponent(ax);
+    const maxW = _glbRootWorldBox.max.getComponent(ax);
 
-    const ax = XR_SLICE_SCROLL_AXIS[plane.view];
-    const minW = box.min.getComponent(ax);
-    const maxW = box.max.getComponent(ax);
-    const coordW = axisValueFromSlice(
-      ss.current,
-      ss.total,
-      minW,
-      maxW,
-      plane.highEndIsFirstSlice,
-    );
+    if (plane.entity.hasComponent(Pressed)) {
+      _sliceWorldScratch.copy(obj.position);
+      pivot.localToWorld(_sliceWorldScratch);
+      const clampedW = THREE.MathUtils.clamp(_sliceWorldScratch.getComponent(ax), minW, maxW);
+      slicePlaneWorldPositionFromBox(_glbRootWorldBox, ax, clampedW, _sliceWorldScratch);
+      pivot.worldToLocal(_sliceWorldScratch);
+      obj.position.copy(_sliceWorldScratch);
+      setSlicePlaneLocalRotationWorldLocked(obj, pivot, cfg.worldNormal);
 
-    slicePlaneWorldPositionFromBox(box, ax, coordW, _sliceWorldScratch);
-    obj.position.copy(_sliceWorldScratch);
-    pivot.worldToLocal(obj.position);
-
-    setSlicePlaneLocalRotationWorldLocked(obj, pivot, XR_SLICE_PLANE_WORLD_NORMAL[plane.view]);
-    plane.baseQuat.copy(obj.quaternion);
-    plane.lastRequestedIndex = Math.max(0, ss.current - 1);
-  }
-}
-
-function updateDraggedSlicePlanes(
-  sliceStates: Map<string, { current: number; total: number }>,
-): void {
-  const root = gGlbRootObj;
-  const pivot = gGlbModelPivotObj;
-  if (!root || !pivot) return;
-  root.updateMatrixWorld(true);
-  pivot.updateMatrixWorld(true);
-  const box = new THREE.Box3().setFromObject(root, true);
-  for (const plane of gSlicePlanes.values()) {
-    if (!plane.entity.hasComponent(Pressed)) continue;
-    const obj = plane.entity.object3D!;
-
-    const ax = XR_SLICE_SCROLL_AXIS[plane.view];
-    const minW = box.min.getComponent(ax);
-    const maxW = box.max.getComponent(ax);
-
-    _sliceWorldScratch.copy(obj.position);
-    pivot.localToWorld(_sliceWorldScratch);
-    const clampedW = THREE.MathUtils.clamp(_sliceWorldScratch.getComponent(ax), minW, maxW);
-    slicePlaneWorldPositionFromBox(box, ax, clampedW, _sliceWorldScratch);
-    pivot.worldToLocal(_sliceWorldScratch);
-    obj.position.copy(_sliceWorldScratch);
-    setSlicePlaneLocalRotationWorldLocked(obj, pivot, XR_SLICE_PLANE_WORLD_NORMAL[plane.view]);
-    plane.baseQuat.copy(obj.quaternion);
-
-    const panel = gPanels.get(plane.view);
-    const ss = sliceStates.get(plane.view);
-    if (!panel || !ss || ss.total <= 1) continue;
-    const idx = sliceIndexFromAxis(
-      clampedW,
-      ss.total,
-      minW,
-      maxW,
-      plane.highEndIsFirstSlice,
-    );
-    if (idx === plane.lastRequestedIndex) continue;
-    plane.lastRequestedIndex = idx;
-    requestPanelSliceJump(panel, idx);
+      const panel = gPanels.get(plane.view);
+      const ss = sliceStates.get(plane.view);
+      if (!panel || !ss || ss.total <= 1) continue;
+      const idx = sliceIndexFromAxis(
+        clampedW,
+        ss.total,
+        minW,
+        maxW,
+        cfg.highEndIsFirstSlice,
+      );
+      if (idx === plane.lastRequestedIndex) continue;
+      plane.lastRequestedIndex = idx;
+      requestPanelSliceJump(panel, idx);
+    } else {
+      const ss = sliceStates.get(plane.view);
+      if (!ss || ss.total < 1) continue;
+      const coordW = axisValueFromSlice(
+        ss.current,
+        ss.total,
+        minW,
+        maxW,
+        cfg.highEndIsFirstSlice,
+      );
+      slicePlaneWorldPositionFromBox(_glbRootWorldBox, ax, coordW, _sliceWorldScratch);
+      obj.position.copy(_sliceWorldScratch);
+      pivot.worldToLocal(obj.position);
+      setSlicePlaneLocalRotationWorldLocked(obj, pivot, cfg.worldNormal);
+      plane.lastRequestedIndex = Math.max(0, ss.current - 1);
+    }
   }
 }
 
@@ -527,10 +484,12 @@ function createSlicePlanes(
 
   const size = bounds.getSize(new THREE.Vector3());
   const ps = SLICE_PLANE_VISUAL_SCALE;
+  root.updateMatrixWorld(true);
+  modelPivot.updateMatrixWorld(true);
 
   for (const view of PLANE_IDS) {
     const col = VIEW_COLORS_HEX[view];
-    const n = XR_SLICE_PLANE_WORLD_NORMAL[view];
+    const cfg = XR_SLICE_BY_VIEW[view];
 
     const mesh = new THREE.Mesh(
       new THREE.PlaneGeometry(1, 1),
@@ -551,12 +510,10 @@ function createSlicePlanes(
     );
 
     modelPivot.add(mesh);
-    root.updateMatrixWorld(true);
-    modelPivot.updateMatrixWorld(true);
     _sliceWorldScratch.copy(bounds.getCenter(new THREE.Vector3()));
     mesh.position.copy(_sliceWorldScratch);
     modelPivot.worldToLocal(mesh.position);
-    setSlicePlaneLocalRotationWorldLocked(mesh, modelPivot, n);
+    setSlicePlaneLocalRotationWorldLocked(mesh, modelPivot, cfg.worldNormal);
 
     mesh.renderOrder = 10;
 
@@ -568,13 +525,7 @@ function createSlicePlanes(
     });
     (entity.object3D as any).pointerEventsType = 'all';
 
-    const plane: SlicePlane = {
-      view,
-      entity,
-      highEndIsFirstSlice: SLICE_HIGH_END_IS_FIRST[view],
-      baseQuat: mesh.quaternion.clone(),
-      lastRequestedIndex: -1,
-    };
+    const plane: SlicePlane = { view, entity, lastRequestedIndex: -1 };
     mesh.addEventListener('pointerdown', () => {
       applySlicePlaneOpacityHighlight(view);
     });
@@ -718,8 +669,7 @@ class DicomSystem extends createSystem({}) {
   update(_delta: number, _time: number) {
     ensureSlicePlanePointerEventsForRays();
     const sliceStates = fillSliceStates(gSliceStateScratch);
-    syncSlicePlanesFromSliceState(sliceStates);
-    updateDraggedSlicePlanes(sliceStates);
+    applySlicePlanesFromState(sliceStates);
     const snap = PLANE_IDS.map((v) => {
       const s = sliceStates.get(v);
       return s ? `${s.current}/${s.total}` : '--';
